@@ -12,6 +12,7 @@ from openai.types.file_purpose import FilePurpose
 from .schemas import (
     AttachFilesResult,
     FileListResult,
+    FilePreviewResult,
     FileSummary,
     OpenAIAttributes,
     SearchHit,
@@ -107,6 +108,62 @@ class OpenAIFilesVectorStoreGateway:
             files=files,
             total_returned=len(files),
             purpose_filter=purpose,
+        )
+
+    def preview_file(
+        self,
+        *,
+        file_id: str,
+        vector_store_id: str,
+        max_chars: int,
+    ) -> FilePreviewResult:
+        started_at = perf_counter()
+        file_object = self._client.files.retrieve(file_id)
+        parsed_contents_page = self._client.vector_stores.files.content(
+            file_id,
+            vector_store_id=vector_store_id,
+        )
+        parsed_text = "\n\n".join(
+            content_item.text
+            for content_item in parsed_contents_page
+            if content_item.type == "text" and content_item.text
+        )
+        preview_text = parsed_text[:max_chars] if parsed_text else None
+        preview_truncated = len(parsed_text) > max_chars
+
+        preview_message: str | None
+        if preview_text is None:
+            preview_message = (
+                "No parsed text preview is available yet for this attached file."
+            )
+        else:
+            preview_message = (
+                f"Showing the first {max_chars:,} characters of the parsed file content."
+                if preview_truncated
+                else None
+            )
+
+        duration_ms = (perf_counter() - started_at) * 1000
+        self._logger.info(
+            "openai_file_preview vector_store_id=%s file_id=%s filename=%s previewable=%s truncated=%s duration_ms=%.1f",
+            vector_store_id,
+            file_id,
+            file_object.filename,
+            preview_text is not None,
+            preview_truncated,
+            duration_ms,
+        )
+
+        return FilePreviewResult(
+            vector_store_id=vector_store_id,
+            file_id=file_object.id,
+            filename=file_object.filename,
+            bytes=file_object.bytes,
+            purpose=file_object.purpose,
+            status=file_object.status,
+            preview_text=preview_text,
+            preview_truncated=preview_truncated,
+            preview_message=preview_message,
         )
 
     def create_vector_store(

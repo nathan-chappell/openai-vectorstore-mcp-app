@@ -1,14 +1,28 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+import subprocess
 import uuid
 from pathlib import Path
-import subprocess
+from typing import Any, TypeVar
 
 import pytest
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, ContentBlock
 from openai import OpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel
 
+from apps.openai_files_vector_store.backend.schemas import (
+    AskVectorStoreResult,
+    AttachFilesResult,
+    FileListResult,
+    FilePreviewResult,
+    OpenVectorStoreConsoleResult,
+    SearchVectorStoreResult,
+    UploadFileResult,
+    VectorStoreListResult,
+    VectorStoreStatusResult,
+    VectorStoreSummary,
+)
 from apps.openai_files_vector_store.backend.server import (
     CONSOLE_RESOURCE_URI,
     RESOURCE_MIME_TYPE,
@@ -16,23 +30,26 @@ from apps.openai_files_vector_store.backend.server import (
 )
 from apps.openai_files_vector_store.backend.settings import AppSettings
 
+type ToolCallResponse = Sequence[ContentBlock] | dict[str, Any] | CallToolResult
+
+ResultModelT = TypeVar("ResultModelT", bound=BaseModel)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UI_DIR = REPO_ROOT / "apps/openai_files_vector_store/ui"
 UI_DIST_PATH = UI_DIR / "dist/mcp-app.html"
 
 
-def test_settings_require_openai_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    with pytest.raises(ValidationError):
-        AppSettings(_env_file=None)
+def test_settings_load_from_dotenv() -> None:
+    settings = AppSettings()
+    assert settings.openai_api_key.get_secret_value()
+    assert settings.openai_agent_model == "gpt-5.4"
+    assert settings.openai_file_search_max_results == 5
+    assert settings.log_level == "INFO"
 
 
 @pytest.mark.asyncio
-async def test_server_exposes_expected_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    settings = AppSettings()
-    server = create_server(settings)
+async def test_server_exposes_expected_tools() -> None:
+    server = create_server(AppSettings())
 
     tool_names = {tool.name for tool in await server.list_tools()}
 
@@ -40,6 +57,7 @@ async def test_server_exposes_expected_tools(monkeypatch: pytest.MonkeyPatch) ->
         "open_vector_store_console",
         "upload_file",
         "list_files",
+        "preview_file",
         "create_vector_store",
         "list_vector_stores",
         "attach_files_to_vector_store",
@@ -62,12 +80,9 @@ def built_console_ui() -> Path:
 
 @pytest.mark.asyncio
 async def test_server_exposes_console_resource(
-    monkeypatch: pytest.MonkeyPatch,
     built_console_ui: Path,
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    settings = AppSettings()
-    server = create_server(settings)
+    server = create_server(AppSettings())
 
     resources = await server.list_resources()
     resource = next(
@@ -80,18 +95,20 @@ async def test_server_exposes_console_resource(
     contents = await server.read_resource(CONSOLE_RESOURCE_URI)
     assert len(contents) == 1
     assert contents[0].mime_type == RESOURCE_MIME_TYPE
-    assert "<title>OpenAI Files Vector Store Console</title>" in contents[0].content
-    assert "vector-store-console-root" in contents[0].content
+    content = (
+        contents[0].content
+        if isinstance(contents[0].content, str)
+        else str(contents[0].content, encoding="utf-8")
+    )
+    assert "<title>OpenAI Files Vector Store Console</title>" in content
+    assert "vector-store-console-root" in content
 
 
 @pytest.mark.asyncio
 async def test_live_upload_attach_search_and_ask(
     tmp_path: Path,
 ) -> None:
-    try:
-        settings = AppSettings()
-    except ValidationError:
-        pytest.skip("OPENAI_API_KEY is not set; skipping live OpenAI integration test.")
+    settings = AppSettings()
     server = create_server(settings)
     cleanup_client = OpenAI(api_key=settings.openai_api_key.get_secret_value())
 
@@ -118,9 +135,10 @@ async def test_live_upload_attach_search_and_ask(
                     "name": f"VS Code MCP Test {marker}",
                     "metadata": {"test_case": marker},
                 },
-            )
+            ),
+            VectorStoreSummary,
         )
-        vector_store_id = create_result["id"]
+        vector_store_id = create_result.id
 
         upload_result = _structured_result(
             await server.call_tool(
@@ -128,16 +146,16 @@ async def test_live_upload_attach_search_and_ask(
                 {
                     "local_path": str(local_file),
                 },
-            )
+            ),
+            UploadFileResult,
         )
-        file_id = upload_result["uploaded_file"]["id"]
+        file_id = upload_result.uploaded_file.id
 
         file_list_result = _structured_result(
-            await server.call_tool("list_files", {"limit": 50})
+            await server.call_tool("list_files", {"limit": 50}),
+            FileListResult,
         )
-        assert any(
-            file_entry["id"] == file_id for file_entry in file_list_result["files"]
-        )
+        assert any(file_entry.id == file_id for file_entry in file_list_result.files)
 
         attach_result = _structured_result(
             await server.call_tool(
@@ -146,9 +164,10 @@ async def test_live_upload_attach_search_and_ask(
                     "vector_store_id": vector_store_id,
                     "file_ids": [file_id],
                 },
-            )
+            ),
+            AttachFilesResult,
         )
-        assert attach_result["attached_files"][0]["status"] == "completed"
+        assert attach_result.attached_files[0].status == "completed"
 
         console_result = _structured_result(
             await server.call_tool(
@@ -156,26 +175,29 @@ async def test_live_upload_attach_search_and_ask(
                 {
                     "vector_store_id": vector_store_id,
                 },
-            )
+            ),
+            OpenVectorStoreConsoleResult,
         )
-        assert console_result["selected_vector_store_id"] == vector_store_id
+        assert console_result.selected_vector_store_id == vector_store_id
+        assert console_result.selected_vector_store_status is not None
         assert (
-            console_result["selected_vector_store_status"]["vector_store"]["id"]
+            console_result.selected_vector_store_status.vector_store.id
             == vector_store_id
         )
-        assert console_result["search_panel"]["query"] == ""
-        assert console_result["ask_panel"]["question"] == ""
+        assert console_result.search_panel.query == ""
+        assert console_result.ask_panel.question == ""
         assert any(
-            vector_store["id"] == vector_store_id
-            for vector_store in console_result["vector_store_list"]["vector_stores"]
+            vector_store.id == vector_store_id
+            for vector_store in console_result.vector_store_list.vector_stores
         )
 
         vector_store_list_result = _structured_result(
-            await server.call_tool("list_vector_stores", {"limit": 50})
+            await server.call_tool("list_vector_stores", {"limit": 50}),
+            VectorStoreListResult,
         )
         assert any(
-            vector_store["id"] == vector_store_id
-            for vector_store in vector_store_list_result["vector_stores"]
+            vector_store.id == vector_store_id
+            for vector_store in vector_store_list_result.vector_stores
         )
 
         status_result = _structured_result(
@@ -184,12 +206,27 @@ async def test_live_upload_attach_search_and_ask(
                 {
                     "vector_store_id": vector_store_id,
                 },
-            )
+            ),
+            VectorStoreStatusResult,
         )
-        assert status_result["vector_store"]["status"] in {"completed", "in_progress"}
-        assert any(
-            vector_file["id"] == file_id for vector_file in status_result["files"]
+        assert status_result.vector_store.status in {"completed", "in_progress"}
+        assert any(vector_file.id == file_id for vector_file in status_result.files)
+
+        preview_result = _structured_result(
+            await server.call_tool(
+                "preview_file",
+                {
+                    "vector_store_id": vector_store_id,
+                    "file_id": file_id,
+                },
+            ),
+            FilePreviewResult,
         )
+        assert preview_result.vector_store_id == vector_store_id
+        assert preview_result.file_id == file_id
+        assert preview_result.filename == local_file.name
+        assert preview_result.preview_text is not None
+        assert marker in preview_result.preview_text
 
         search_result = _structured_result(
             await server.call_tool(
@@ -199,10 +236,11 @@ async def test_live_upload_attach_search_and_ask(
                     "query": marker,
                     "max_num_results": 5,
                 },
-            )
+            ),
+            SearchVectorStoreResult,
         )
-        assert search_result["total_hits"] >= 1
-        assert any(marker in hit["text"] for hit in search_result["hits"])
+        assert search_result.total_hits >= 1
+        assert any(marker in hit.text for hit in search_result.hits)
 
         ask_result = _structured_result(
             await server.call_tool(
@@ -212,14 +250,15 @@ async def test_live_upload_attach_search_and_ask(
                     "question": "What is the retrieval marker in the indexed document?",
                     "max_num_results": 5,
                 },
-            )
+            ),
+            AskVectorStoreResult,
         )
-        assert marker in ask_result["answer"]
-        assert ask_result["search_calls"]
+        assert marker in ask_result.answer
+        assert ask_result.search_calls
         assert any(
-            marker in result["text"]
-            for search_call in ask_result["search_calls"]
-            for result in search_call["results"]
+            marker in result.text
+            for search_call in ask_result.search_calls
+            for result in search_call.results
         )
     finally:
         if vector_store_id is not None:
@@ -228,7 +267,15 @@ async def test_live_upload_attach_search_and_ask(
             cleanup_client.files.delete(file_id)
 
 
-def _structured_result(result: CallToolResult) -> dict[str, object]:
-    assert result.structuredContent is not None
-    assert isinstance(result.structuredContent, dict)
-    return result.structuredContent
+def _structured_result(
+    result: ToolCallResponse,
+    result_type: type[ResultModelT],
+) -> ResultModelT:
+    if isinstance(result, CallToolResult):
+        structured_content = result.structuredContent
+    else:
+        structured_content = result
+
+    assert structured_content is not None
+    assert isinstance(structured_content, dict)
+    return result_type.model_validate(structured_content)

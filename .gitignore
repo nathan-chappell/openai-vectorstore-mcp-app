@@ -17,6 +17,7 @@ logs/
 
 node_modules/
 dist/
+host-dist/
 build/
 
 .vscode/*

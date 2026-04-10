@@ -3,8 +3,10 @@ import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import type {
   AskVectorStoreArguments,
   AskVectorStoreResult,
+  FilePreviewResult,
   GetVectorStoreStatusArguments,
   OpenVectorStoreConsoleResult,
+  PreviewFileArguments,
   SearchHit,
   SearchVectorStoreArguments,
   SearchVectorStoreResult,
@@ -151,11 +153,7 @@ function scoreHit(query: string, text: string): number {
   return matches === 0 ? 0 : matches / queryTerms.length;
 }
 
-function buildSearchHits(
-  vector_store_id: string,
-  query: string,
-  max_num_results: number,
-): SearchHit[] {
+function buildSearchHits(vector_store_id: string, query: string, max_num_results: number): SearchHit[] {
   return DOCUMENTS.filter((document) => document.vector_store_id === vector_store_id)
     .map((document) => ({
       file_id: document.file_id,
@@ -174,8 +172,7 @@ export function createMockBridge(): VectorStoreConsoleBridge {
   const initial_state: OpenVectorStoreConsoleResult = {
     vector_store_list: VECTOR_STORE_LIST,
     selected_vector_store_id: initialVectorStoreId,
-    selected_vector_store_status:
-      initialVectorStoreId === null ? null : STATUS_BY_ID[initialVectorStoreId],
+    selected_vector_store_status: initialVectorStoreId === null ? null : STATUS_BY_ID[initialVectorStoreId],
     search_panel: {
       query: "",
       max_num_results: 5,
@@ -203,15 +200,9 @@ export function createMockBridge(): VectorStoreConsoleBridge {
       }
       return status;
     },
-    async search_vector_store(
-      args: SearchVectorStoreArguments,
-    ): Promise<SearchVectorStoreResult> {
+    async search_vector_store(args: SearchVectorStoreArguments): Promise<SearchVectorStoreResult> {
       await wait(180);
-      const hits = buildSearchHits(
-        args.vector_store_id,
-        args.query,
-        args.max_num_results ?? 5,
-      );
+      const hits = buildSearchHits(args.vector_store_id, args.query, args.max_num_results ?? 5);
       return {
         vector_store_id: args.vector_store_id,
         query: args.query,
@@ -221,11 +212,7 @@ export function createMockBridge(): VectorStoreConsoleBridge {
     },
     async ask_vector_store(args: AskVectorStoreArguments): Promise<AskVectorStoreResult> {
       await wait(240);
-      const hits = buildSearchHits(
-        args.vector_store_id,
-        args.question,
-        args.max_num_results ?? 5,
-      );
+      const hits = buildSearchHits(args.vector_store_id, args.question, args.max_num_results ?? 5);
       const answer =
         hits.length > 0
           ? `Based on the indexed content, ${hits[0].text}`
@@ -244,6 +231,29 @@ export function createMockBridge(): VectorStoreConsoleBridge {
             results: hits,
           },
         ],
+      };
+    },
+    async preview_file(args: PreviewFileArguments): Promise<FilePreviewResult> {
+      await wait(140);
+      const document = DOCUMENTS.find((candidate) => candidate.file_id === args.file_id);
+      if (!document) {
+        throw new Error(`Unknown mock file: ${args.file_id}`);
+      }
+
+      const previewText = document.text.slice(0, args.max_chars ?? 32_768);
+      return {
+        vector_store_id: document.vector_store_id,
+        file_id: document.file_id,
+        filename: document.filename,
+        bytes: new TextEncoder().encode(document.text).length,
+        purpose: "assistants",
+        status: "processed",
+        preview_text: previewText,
+        preview_truncated: previewText.length < document.text.length,
+        preview_message:
+          previewText.length < document.text.length
+            ? `Showing the first ${args.max_chars ?? 32_768} characters of the parsed file content.`
+            : null,
       };
     },
   };

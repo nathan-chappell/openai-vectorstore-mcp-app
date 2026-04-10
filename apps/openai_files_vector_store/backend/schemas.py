@@ -190,6 +190,18 @@ class FileListResult(BaseModel):
     purpose_filter: str | None = None
 
 
+class FilePreviewResult(BaseModel):
+    vector_store_id: str
+    file_id: str
+    filename: str
+    bytes: int
+    purpose: str
+    status: str
+    preview_text: str | None = None
+    preview_truncated: bool = False
+    preview_message: str | None = None
+
+
 class VectorStoreListResult(BaseModel):
     vector_stores: list[VectorStoreSummary]
     total_returned: int

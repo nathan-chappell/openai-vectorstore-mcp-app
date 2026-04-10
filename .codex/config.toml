@@ -1,0 +1,7 @@
+[mcp_servers.openai-files-vector-store]
+command = "bash"
+args = [
+  "-lc",
+  "cd \"$(git rev-parse --show-toplevel)\" && exec ./.venv/bin/python -m apps.openai_files_vector_store.backend.main",
+]
+env_vars = ["OPENAI_API_KEY"]

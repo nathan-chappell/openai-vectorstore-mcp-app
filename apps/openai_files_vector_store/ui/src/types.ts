@@ -8,6 +8,18 @@ export interface FileCountsSummary {
   total: number;
 }
 
+export interface FilePreviewResult {
+  vector_store_id: string;
+  file_id: string;
+  filename: string;
+  bytes: number;
+  purpose: string;
+  status: string;
+  preview_text: string | null;
+  preview_truncated: boolean;
+  preview_message: string | null;
+}
+
 export interface VectorStoreSummary {
   id: string;
   name: string;
@@ -122,11 +134,13 @@ export interface AskVectorStoreArguments {
   max_num_results?: number;
 }
 
-export type ToolResultName =
-  | "list_vector_stores"
-  | "get_vector_store_status"
-  | "search_vector_store"
-  | "ask_vector_store";
+export interface PreviewFileArguments {
+  vector_store_id: string;
+  file_id: string;
+  max_chars?: number;
+}
+
+export type ToolResultName = "list_vector_stores" | "get_vector_store_status" | "search_vector_store" | "ask_vector_store" | "preview_file";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -140,20 +154,10 @@ export function getStructuredContent<T>(result: CallToolResult): T {
 }
 
 export function getTextContent(result: CallToolResult): string {
-  const block = result.content.find(
-    (item): item is Extract<CallToolResult["content"][number], { type: "text" }> =>
-      item.type === "text",
-  );
+  const block = result.content.find((item): item is Extract<CallToolResult["content"][number], { type: "text" }> => item.type === "text");
   return block?.text ?? "";
 }
 
-export function isOpenVectorStoreConsoleResult(
-  value: unknown,
-): value is OpenVectorStoreConsoleResult {
-  return (
-    isRecord(value) &&
-    "vector_store_list" in value &&
-    "search_panel" in value &&
-    "ask_panel" in value
-  );
+export function isOpenVectorStoreConsoleResult(value: unknown): value is OpenVectorStoreConsoleResult {
+  return isRecord(value) && "vector_store_list" in value && "search_panel" in value && "ask_panel" in value;
 }

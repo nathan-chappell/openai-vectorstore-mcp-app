@@ -25,9 +25,10 @@ This is the first conceptual MCP app in the repo, built backend-first so we can 
 ## Local workflow
 
 1. Put your key in `.env` or export `OPENAI_API_KEY`.
-2. In [`ui/`](/home/uphill/programming/mcp_apps_test/apps/openai_files_vector_store/ui), run `npm install` once and then `npm run build:watch` while working on the app.
-3. Open VS Code Agent mode and enable the `openai-files-vector-store` MCP server from the tools picker.
-4. Use the chat UI to run a flow like:
+2. In [`ui/`](/home/uphill/programming/mcp_apps_test/apps/openai_files_vector_store/ui), run `npm install` once.
+3. For the full local MCP App loop, run `npm run dev` in [`ui/`](/home/uphill/programming/mcp_apps_test/apps/openai_files_vector_store/ui) and open `http://127.0.0.1:8080/`.
+4. For VS Code chat-driven testing instead, run `npm run build:watch` in [`ui/`](/home/uphill/programming/mcp_apps_test/apps/openai_files_vector_store/ui) and enable the `openai-files-vector-store` MCP server from the tools picker.
+5. Use either the local test host or VS Code chat to run a flow like:
    - open `open_vector_store_console`
    - create a vector store
    - upload or attach a file
@@ -38,7 +39,8 @@ This is the first conceptual MCP app in the repo, built backend-first so we can 
 ## UI development
 
 - The app ships as a single `dist/mcp-app.html` resource served from the Python MCP server.
-- Local browser iteration is supported with mock data via `npm run dev`.
+- `npm run dev` now uses a repo-local test host adapted from `modelcontextprotocol/ext-apps/examples/basic-host`, so you can exercise the real MCP transport and iframe bridge from the browser.
+- Local browser iteration is still supported with mock data via `npm run dev:mock`.
 - The first UI slice is intentionally retrieval-focused: list vector stores, inspect one store, run raw search, and run grounded Q&A.
 
 ## Testing

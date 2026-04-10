@@ -14,6 +14,7 @@ from .openai_gateway import OpenAIFilesVectorStoreGateway
 from .qa_agent import VectorStoreQuestionAnswerer
 from .schemas import (
     AskPanelState,
+    FilePreviewResult,
     OpenVectorStoreConsoleResult,
     SearchPanelState,
     ToolAttributes,
@@ -29,6 +30,7 @@ CONSOLE_RESOURCE_URI = "ui://openai-files-vector-store/console.html"
 CONSOLE_UI_PATH = (
     Path(__file__).resolve().parent.parent / "ui" / "dist" / "mcp-app.html"
 )
+DEFAULT_FILE_PREVIEW_MAX_CHARS = 32_768
 
 
 def create_server(settings: AppSettings | None = None) -> FastMCP:
@@ -168,6 +170,39 @@ def create_server(settings: AppSettings | None = None) -> FastMCP:
     ) -> CallToolResult:
         payload = gateway.list_files(limit=limit, purpose=purpose)
         summary = f"Returned {payload.total_returned} file(s)."
+        return _tool_result(summary, payload)
+
+    @server.tool(
+        name="preview_file",
+        title="Preview File",
+        description=(
+            "Fetch a text preview for a single OpenAI file so the MCP app can "
+            "inspect listed files inline."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+        meta={"ui": {"visibility": ["app"]}},
+    )
+    def preview_file(
+        vector_store_id: Annotated[str, Field(min_length=1)],
+        file_id: Annotated[str, Field(min_length=1)],
+        max_chars: Annotated[int | None, Field(ge=1, le=131_072)] = None,
+    ) -> CallToolResult:
+        payload = gateway.preview_file(
+            file_id=file_id,
+            vector_store_id=vector_store_id,
+            max_chars=max_chars or DEFAULT_FILE_PREVIEW_MAX_CHARS,
+        )
+        if payload.preview_text is None:
+            summary = f"Loaded metadata for {payload.filename}; inline preview is unavailable."
+        elif payload.preview_truncated:
+            summary = f"Loaded a truncated preview for {payload.filename}."
+        else:
+            summary = f"Loaded a preview for {payload.filename}."
         return _tool_result(summary, payload)
 
     @server.tool(
@@ -374,6 +409,7 @@ def create_server(settings: AppSettings | None = None) -> FastMCP:
             "open_vector_store_console",
             "upload_file",
             "list_files",
+            "preview_file",
             "create_vector_store",
             "list_vector_stores",
             "attach_files_to_vector_store",
@@ -392,7 +428,7 @@ def _tool_result(
     meta: dict[str, object] | None = None,
 ) -> CallToolResult:
     return CallToolResult(
-        meta=meta,
+        _meta=meta,
         content=[TextContent(type="text", text=summary)],
         structuredContent=payload.model_dump(mode="json"),
     )

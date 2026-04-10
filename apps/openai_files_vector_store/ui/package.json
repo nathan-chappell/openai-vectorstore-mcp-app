@@ -4,9 +4,16 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"app,host,server\" --prefix-colors \"green,blue,magenta\" \"npm run build:watch\" \"npm run host:dev\" \"npm run dev:server\"",
+    "dev:mock": "vite",
+    "dev:server": "bash -lc 'cd ../../.. && .venv/bin/python -m apps.openai_files_vector_store.backend.http_main'",
     "build": "vite build",
     "build:watch": "vite build --watch",
+    "host:build": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"index,sandbox\" --prefix-colors \"cyan,yellow\" \"cross-env INPUT=dev-host/index.html vite build --config vite.host.config.ts\" \"cross-env INPUT=dev-host/sandbox.html vite build --config vite.host.config.ts\"",
+    "host:watch": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"index,sandbox\" --prefix-colors \"cyan,yellow\" \"cross-env INPUT=dev-host/index.html vite build --watch --config vite.host.config.ts\" \"cross-env INPUT=dev-host/sandbox.html vite build --watch --config vite.host.config.ts\"",
+    "host:serve": "tsx dev-host/server.ts",
+    "host:dev": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"watch,serve\" --prefix-colors \"cyan,yellow\" \"npm run host:watch\" \"npm run host:serve\"",
+    "format": "prettier --write .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,10 +25,18 @@
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "cross-env": "^10.1.0",
+    "express": "^5.2.1",
+    "prettier": "^3.6.2",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vite": "^8.0.8",
     "vite-plugin-singlefile": "^2.3.2"
