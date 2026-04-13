@@ -7,6 +7,10 @@ from colorlog import ColoredFormatter
 _FORMAT = "%(log_color)s%(levelname)-8s%(reset)s %(name)s %(message)s"
 
 
+class _OpenAIFilesVectorStoreStreamHandler(logging.StreamHandler):
+    """Marker handler for idempotent logging configuration."""
+
+
 def configure_logging(level: str) -> None:
     """Configure workspace logging once, keeping repeated setup idempotent."""
 
@@ -17,14 +21,13 @@ def configure_logging(level: str) -> None:
         (
             handler
             for handler in root_logger.handlers
-            if getattr(handler, "_openai_files_vector_store_handler", False)
+            if isinstance(handler, _OpenAIFilesVectorStoreStreamHandler)
         ),
         None,
     )
 
     if existing_handler is None:
-        handler = logging.StreamHandler()
-        handler._openai_files_vector_store_handler = True  # type: ignore[attr-defined]
+        handler = _OpenAIFilesVectorStoreStreamHandler()
         handler.setFormatter(
             ColoredFormatter(
                 _FORMAT,
