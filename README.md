@@ -2,7 +2,7 @@
 
 This repo contains a Clerk-authenticated file desk built around one shared domain layer with two delivery surfaces:
 
-- an MCP server with an interactive file-library UI
+- an MCP server with interactive files, search, and branch-search UIs
 - a companion React web app that mirrors file browsing, upload, delete, and ChatKit chat
 
 ## Architecture
@@ -14,7 +14,7 @@ This repo contains a Clerk-authenticated file desk built around one shared domai
 The backend is intentionally split into:
 
 - `bootstrap.py` for shared service wiring
-- `mcp_app.py` for MCP auth, tools, and the Prefab file-library UI
+- `mcp_app.py` for MCP auth, tools, and the Prefab files/search UIs
 - `web_app.py` for FastAPI routes, static hosting, `/api/chatkit`, and mounting `/mcp`
 
 ## Tool Surface
@@ -24,10 +24,13 @@ The MCP app is the primary product surface. It exposes:
 - `list_files`
 - `list_tags`
 - `search_files`
+- `search_file_branches`
 - `get_file_detail`
 - `read_file_text`
 - `delete_file`
-- `open_file_library`
+- `files`
+- `file_search`
+- `branch_search`
 
 The web app is a companion/demo surface. It uses the same `FileLibraryService` for `/api/files`, `/api/tags`, upload session + upload finalize, file downloads, and ChatKit.
 

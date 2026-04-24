@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from backend.models import (
     FileTagLink,
     LibraryFile,
 )
+from backend.schemas import SearchHit
 from backend.settings import AppSettings
 
 
@@ -69,13 +71,20 @@ async def test_mcp_server_exposes_file_desk_tools(configured_settings: AppSettin
         "list_files",
         "list_tags",
         "search_files",
+        "search_file_branches",
         "get_file_detail",
         "read_file_text",
         "delete_file",
-        "open_file_library",
+        "files",
+        "file_search",
+        "branch_search",
     }
-    assert tools["open_file_library"].meta is not None
-    assert tools["open_file_library"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["files"].meta is not None
+    assert tools["files"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["file_search"].meta is not None
+    assert tools["file_search"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["branch_search"].meta is not None
+    assert tools["branch_search"].meta["ui"]["resourceUri"].startswith("ui://")
 
 
 @pytest.mark.asyncio
@@ -91,13 +100,224 @@ async def test_dev_mcp_server_exposes_file_desk_tools(configured_settings: AppSe
         "list_files",
         "list_tags",
         "search_files",
+        "search_file_branches",
         "get_file_detail",
         "read_file_text",
         "delete_file",
-        "open_file_library",
+        "files",
+        "file_search",
+        "branch_search",
     }
-    assert tools["open_file_library"].meta is not None
-    assert tools["open_file_library"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["files"].meta is not None
+    assert tools["files"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["file_search"].meta is not None
+    assert tools["file_search"].meta["ui"]["resourceUri"].startswith("ui://")
+    assert tools["branch_search"].meta is not None
+    assert tools["branch_search"].meta["ui"]["resourceUri"].startswith("ui://")
+
+
+@pytest.mark.asyncio
+async def test_file_search_ui_tool_accepts_initial_arguments(
+    configured_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_file_library(configured_settings)
+    services = create_services(configured_settings)
+
+    async def get_user_record(_self, clerk_user_id: str) -> ClerkUserRecord:
+        assert clerk_user_id == "user_123"
+        return ClerkUserRecord(
+            clerk_user_id="user_123",
+            primary_email="owner@example.com",
+            display_name="File Desk Owner",
+            active=True,
+            role="admin",
+        )
+
+    async def fake_search_vector_store(
+        _self,
+        *,
+        vector_store_id: str,
+        query: str,
+        max_results: int,
+        rewrite_query: bool,
+        filters,
+    ) -> list[SearchHit]:
+        assert vector_store_id == "vs_alpha"
+        assert query == "alpha"
+        assert max_results == 8
+        assert rewrite_query is True
+        assert filters == {"type": "eq", "key": "tag__operations", "value": True}
+        return []
+
+    monkeypatch.setattr(
+        "backend.clerk.ClerkAuthService.get_user_record",
+        get_user_record,
+    )
+    monkeypatch.setattr(
+        "backend.file_library_gateway.OpenAIFileLibraryGateway.search_vector_store",
+        fake_search_vector_store,
+    )
+    monkeypatch.setattr(
+        "backend.mcp_app.get_current_clerk_access_token",
+        lambda: SimpleNamespace(subject="user_123"),
+    )
+
+    server = create_dev_mcp_server(configured_settings, services)
+    try:
+        result = await server.call_tool(
+            "file_search",
+            {
+                "query": "alpha",
+                "tag_ids": ["tag_ops"],
+                "tag_match_mode": "all",
+            },
+            run_middleware=False,
+        )
+    finally:
+        await services.close()
+
+    assert result.structured_content is not None
+    assert result.structured_content["state"]["search_state"]["query"] == "alpha"
+    assert result.structured_content["state"]["search_state"]["tag_ids"] == ["tag_ops"]
+    assert result.structured_content["state"]["search_state"]["tag_match_mode"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_branch_search_iterates_vector_search_with_tag_filter(
+    configured_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_file_library(configured_settings)
+    services = create_services(configured_settings)
+    recorded_queries: list[str] = []
+    recorded_filters: list[object] = []
+
+    async def get_user_record(_self, clerk_user_id: str) -> ClerkUserRecord:
+        assert clerk_user_id == "user_123"
+        return ClerkUserRecord(
+            clerk_user_id="user_123",
+            primary_email="owner@example.com",
+            display_name="File Desk Owner",
+            active=True,
+            role="admin",
+        )
+
+    async def fake_search_vector_store(
+        _self,
+        *,
+        vector_store_id: str,
+        query: str,
+        max_results: int,
+        rewrite_query: bool,
+        filters,
+    ) -> list[SearchHit]:
+        assert vector_store_id == "vs_alpha"
+        assert max_results == 2
+        assert rewrite_query is True
+        recorded_queries.append(query)
+        recorded_filters.append(filters)
+        if query == "ops handbook":
+            return [
+                SearchHit(
+                    file_id="node_alpha",
+                    file_title="Alpha Notes",
+                    original_filename="alpha-notes.txt",
+                    derived_artifact_id="artifact_alpha",
+                    openai_file_id="artifact_file_alpha",
+                    original_openai_file_id="file_alpha",
+                    media_type="text/plain",
+                    source_kind="document",
+                    score=0.96,
+                    text="Alpha notes explain how the file desk should work.",
+                    tags=["Operations"],
+                    attributes=None,
+                ),
+                SearchHit(
+                    file_id="node_beta",
+                    file_title="Beta Guide",
+                    original_filename="beta-guide.txt",
+                    derived_artifact_id="artifact_beta",
+                    openai_file_id="artifact_file_beta",
+                    original_openai_file_id="file_beta",
+                    media_type="text/plain",
+                    source_kind="document",
+                    score=0.88,
+                    text="Beta guide covers operational rollout details.",
+                    tags=["Operations"],
+                    attributes=None,
+                ),
+            ]
+        if "Alpha Notes" in query:
+            return [
+                SearchHit(
+                    file_id="node_gamma",
+                    file_title="Gamma Checklist",
+                    original_filename="gamma-checklist.txt",
+                    derived_artifact_id="artifact_gamma",
+                    openai_file_id="artifact_file_gamma",
+                    original_openai_file_id="file_gamma",
+                    media_type="text/plain",
+                    source_kind="document",
+                    score=0.81,
+                    text="Gamma checklist expands on the same operating model.",
+                    tags=["Operations"],
+                    attributes=None,
+                )
+            ]
+        if "Beta Guide" in query:
+            return [
+                SearchHit(
+                    file_id="node_delta",
+                    file_title="Delta Runbook",
+                    original_filename="delta-runbook.txt",
+                    derived_artifact_id="artifact_delta",
+                    openai_file_id="artifact_file_delta",
+                    original_openai_file_id="file_delta",
+                    media_type="text/plain",
+                    source_kind="document",
+                    score=0.79,
+                    text="Delta runbook follows the same rollout approach.",
+                    tags=["Operations"],
+                    attributes=None,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "backend.file_library_gateway.OpenAIFileLibraryGateway.search_vector_store",
+        fake_search_vector_store,
+    )
+    monkeypatch.setattr(
+        "backend.clerk.ClerkAuthService.get_user_record",
+        get_user_record,
+    )
+
+    try:
+        branch_result = await services.file_library.search_file_branches(
+            clerk_user_id="user_123",
+            query="ops handbook",
+            tag_ids=["tag_ops"],
+            tag_match_mode="all",
+            descend=1,
+            max_width=2,
+        )
+    finally:
+        await services.close()
+
+    assert branch_result.query == "ops handbook"
+    assert branch_result.tag_ids == ["tag_ops"]
+    assert [level.depth for level in branch_result.levels] == [0, 1]
+    assert [hit.file_id for hit in branch_result.levels[0].hits] == ["node_alpha", "node_beta"]
+    assert [hit.file_id for hit in branch_result.levels[1].hits] == ["node_gamma", "node_delta"]
+    assert recorded_queries[0] == "ops handbook"
+    assert any("Alpha Notes" in query for query in recorded_queries[1:])
+    assert any("Beta Guide" in query for query in recorded_queries[1:])
+    assert recorded_filters == [
+        {"type": "eq", "key": "tag__operations", "value": True},
+        {"type": "eq", "key": "tag__operations", "value": True},
+        {"type": "eq", "key": "tag__operations", "value": True},
+    ]
 
 
 @pytest.mark.asyncio

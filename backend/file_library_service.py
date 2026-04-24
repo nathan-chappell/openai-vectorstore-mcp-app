@@ -23,6 +23,8 @@ from .schemas import (
     DerivedArtifactSummary,
     FileDetail,
     FileListResponse,
+    SearchBranchLevel,
+    SearchBranchResponse,
     FileSummary,
     FileTagSummary,
     SearchHit,
@@ -330,6 +332,120 @@ class FileLibraryService:
                 rewrite_query=True,
                 filters=filters,
             )
+
+    async def search_file_branches(
+        self,
+        *,
+        clerk_user_id: str,
+        query: str,
+        tag_ids: list[str],
+        tag_match_mode: TagMatchMode,
+        descend: int,
+        max_width: int,
+    ) -> SearchBranchResponse:
+        normalized_query = query.strip()
+        if not normalized_query:
+            return SearchBranchResponse(
+                query="",
+                descend=descend,
+                max_width=max_width,
+                tag_ids=tag_ids,
+                tag_match_mode=tag_match_mode,
+                levels=[],
+            )
+
+        levels: list[SearchBranchLevel] = []
+        current_hits = await self.search_files(
+            clerk_user_id=clerk_user_id,
+            query=normalized_query,
+            tag_ids=tag_ids,
+            tag_match_mode=tag_match_mode,
+            max_results=max_width,
+        )
+        if current_hits:
+            levels.append(SearchBranchLevel(depth=0, hits=current_hits))
+
+        seen_file_ids = {hit.file_id for hit in current_hits if hit.file_id}
+        for depth in range(1, descend + 1):
+            next_hits: list[SearchHit] = []
+            for seed_hit in current_hits:
+                branch_query = self._branch_query(root_query=normalized_query, search_hit=seed_hit)
+                branch_hits = await self.search_files(
+                    clerk_user_id=clerk_user_id,
+                    query=branch_query,
+                    tag_ids=tag_ids,
+                    tag_match_mode=tag_match_mode,
+                    max_results=max_width,
+                )
+                for candidate in branch_hits:
+                    if not candidate.file_id or candidate.file_id in seen_file_ids:
+                        continue
+                    seen_file_ids.add(candidate.file_id)
+                    next_hits.append(candidate)
+                    if len(next_hits) >= max_width:
+                        break
+                if len(next_hits) >= max_width:
+                    break
+            if not next_hits:
+                break
+            levels.append(SearchBranchLevel(depth=depth, hits=next_hits))
+            current_hits = next_hits
+
+        logger.info(
+            "file_library_branch_search clerk_user_id=%s query=%s descend=%s max_width=%s levels=%s",
+            clerk_user_id,
+            normalized_query,
+            descend,
+            max_width,
+            len(levels),
+        )
+        return SearchBranchResponse(
+            query=normalized_query,
+            descend=descend,
+            max_width=max_width,
+            tag_ids=tag_ids,
+            tag_match_mode=tag_match_mode,
+            levels=levels,
+        )
+
+    async def resolve_tag_ids(
+        self,
+        *,
+        clerk_user_id: str,
+        tag_tokens: list[str],
+    ) -> list[str]:
+        normalized_tokens = [token.strip() for token in tag_tokens if token.strip()]
+        if not normalized_tokens:
+            return []
+
+        await self._database.ensure_ready()
+        async with self._database.session() as session:
+            resolved_user = await self._resolved_user(session, clerk_user_id=clerk_user_id)
+            self._require_active(resolved_user)
+            file_library = await self._file_library_for_user(session, resolved_user=resolved_user)
+
+            tag_lookup: dict[str, str] = {}
+            for tag in file_library.tags:
+                tag_lookup[tag.id.lower()] = tag.id
+                tag_lookup[tag.slug.lower()] = tag.id
+                tag_lookup[tag.name.lower()] = tag.id
+
+            resolved_tag_ids: list[str] = []
+            seen_tag_ids: set[str] = set()
+            missing_tokens: list[str] = []
+            for token in normalized_tokens:
+                resolved_tag_id = tag_lookup.get(token.lower())
+                if resolved_tag_id is None:
+                    missing_tokens.append(token)
+                    continue
+                if resolved_tag_id in seen_tag_ids:
+                    continue
+                seen_tag_ids.add(resolved_tag_id)
+                resolved_tag_ids.append(resolved_tag_id)
+
+            if missing_tokens:
+                raise ValueError(f"Unknown tags: {', '.join(missing_tokens)}")
+            return resolved_tag_ids
 
     async def delete_file(
         self,
@@ -875,6 +991,15 @@ class FileLibraryService:
         ]
         haystack = "\n".join(field for field in fields if field).lower()
         return query in haystack
+
+    @staticmethod
+    def _branch_query(*, root_query: str, search_hit: SearchHit) -> str:
+        parts = [root_query, search_hit.file_title]
+        if search_hit.tags:
+            parts.append(", ".join(search_hit.tags))
+        if search_hit.text:
+            parts.append(search_hit.text[:1_200])
+        return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
 
 def build_file_library_title(display_name: str) -> str:

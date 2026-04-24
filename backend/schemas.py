@@ -131,6 +131,20 @@ class SearchHit(BaseModel):
         )
 
 
+class SearchBranchLevel(BaseModel):
+    depth: int
+    hits: list[SearchHit] = Field(default_factory=list)
+
+
+class SearchBranchResponse(BaseModel):
+    query: str
+    descend: int
+    max_width: int
+    tag_ids: list[str] = Field(default_factory=list)
+    tag_match_mode: TagMatchMode
+    levels: list[SearchBranchLevel] = Field(default_factory=list)
+
+
 class UploadSessionResult(BaseModel):
     upload_url: str
     upload_token: str
