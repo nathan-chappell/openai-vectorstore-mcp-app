@@ -1,18 +1,19 @@
 {
-  "name": "@local/openai-file-desk-ui",
+  "name": "@local/openai-file-desk",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "build:watch": "vite build --watch",
-    "typecheck": "tsc --noEmit"
+    "dev": "vite --config ui/vite.config.ts",
+    "build": "vite build --config ui/vite.config.ts",
+    "build:watch": "vite build --watch --config ui/vite.config.ts",
+    "typecheck": "tsc --noEmit -p ui/tsconfig.json"
   },
   "dependencies": {
     "@clerk/react": "^6.4.3",
     "@openai/chatkit": "^1.6.0",
     "@openai/chatkit-react": "^1.5.0",
+    "prettier": "^3.8.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

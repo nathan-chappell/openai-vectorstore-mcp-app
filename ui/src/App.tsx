@@ -37,8 +37,8 @@ export default function App() {
           <p className="eyebrow">Sign In Required</p>
           <h1>Open the library with your Clerk session</h1>
           <p>
-            This workspace uses the same Clerk-backed flow as the companion apps, so the
-            explorer, uploads, and chat agent all stay scoped to your account.
+            This workspace uses the same Clerk-backed flow as the companion apps, so the explorer, uploads, and chat agent all stay scoped
+            to your account.
           </p>
           <SignInButton mode="modal">
             <button className="primary-button" type="button">
@@ -50,15 +50,7 @@ export default function App() {
     );
   }
 
-  return (
-    <Workspace
-      userLabel={
-        user?.fullName ??
-        user?.primaryEmailAddress?.emailAddress ??
-        "Signed-in user"
-      }
-    />
-  );
+  return <Workspace userLabel={user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? "Signed-in user"} />;
 }
 
 function Workspace({ userLabel }: { userLabel: string }) {
@@ -104,9 +96,7 @@ function Workspace({ userLabel }: { userLabel: string }) {
       });
       setFiles(response.files);
       setTotalCount(response.total_count);
-      setSelectedFileIds((current) =>
-        current.filter((fileId) => response.files.some((file) => file.id === fileId)),
-      );
+      setSelectedFileIds((current) => current.filter((fileId) => response.files.some((file) => file.id === fileId)));
       setActiveFileId((current) => {
         if (current && response.files.some((file) => file.id === current)) {
           return current;
@@ -159,20 +149,12 @@ function Workspace({ userLabel }: { userLabel: string }) {
   function toggleTag(tagId: string): void {
     startTransition(() => {
       setPage(1);
-      setSelectedTagIds((current) =>
-        current.includes(tagId)
-          ? current.filter((value) => value !== tagId)
-          : [...current, tagId],
-      );
+      setSelectedTagIds((current) => (current.includes(tagId) ? current.filter((value) => value !== tagId) : [...current, tagId]));
     });
   }
 
   function toggleSelectedFile(fileId: string): void {
-    setSelectedFileIds((current) =>
-      current.includes(fileId)
-        ? current.filter((value) => value !== fileId)
-        : [...current, fileId],
-    );
+    setSelectedFileIds((current) => (current.includes(fileId) ? current.filter((value) => value !== fileId) : [...current, fileId]));
   }
 
   async function handleUploadSelection(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -231,17 +213,11 @@ function Workspace({ userLabel }: { userLabel: string }) {
               <p className="eyebrow">File Desk</p>
               <h1>Explorer</h1>
               <p className="panel-copy">
-                Search the library, keep a few files selected, and send that context straight into
-                the chat on the right.
+                Search the library, keep a few files selected, and send that context straight into the chat on the right.
               </p>
             </div>
             <div className="explorer-actions">
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading}
-              >
+              <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
                 {isUploading ? "Uploading..." : "Upload files"}
               </button>
               <UserButton />
@@ -297,9 +273,7 @@ function Workspace({ userLabel }: { userLabel: string }) {
             <div className="section-heading">
               <div>
                 <h2>Files</h2>
-                <p>
-                  {isLibraryLoading ? "Loading..." : `${totalCount} file${totalCount === 1 ? "" : "s"}`}
-                </p>
+                <p>{isLibraryLoading ? "Loading..." : `${totalCount} file${totalCount === 1 ? "" : "s"}`}</p>
               </div>
               <div className="selection-pill">{selectedCount} selected</div>
             </div>
@@ -407,11 +381,9 @@ function Workspace({ userLabel }: { userLabel: string }) {
                   </div>
                 </div>
                 <div className="preview-text">
-                  {fileDetail.derived_artifacts.length ? (
-                    fileDetail.derived_artifacts[0].text_content
-                  ) : (
-                    "No extracted text is available for this file yet."
-                  )}
+                  {fileDetail.derived_artifacts.length
+                    ? fileDetail.derived_artifacts[0].text_content
+                    : "No extracted text is available for this file yet."}
                 </div>
                 {fileDetail.download_url ? (
                   <a className="download-link" href={fileDetail.download_url} target="_blank" rel="noreferrer">
@@ -432,8 +404,8 @@ function Workspace({ userLabel }: { userLabel: string }) {
               <p className="eyebrow">Assistant</p>
               <h2>{userLabel}</h2>
               <p className="panel-copy">
-                The chat can see the files you explicitly select in the explorer, and it can widen
-                out to the full MCP-backed library when needed.
+                The chat can see the files you explicitly select in the explorer, and it can widen out to the full MCP-backed library when
+                needed.
               </p>
             </div>
             <div className="chat-summary">
@@ -441,11 +413,7 @@ function Workspace({ userLabel }: { userLabel: string }) {
               <small>files in current chat context</small>
             </div>
           </div>
-          <ChatPane
-            selectedFileIds={selectedFileIds}
-            activeThreadId={activeThreadId}
-            onActiveThreadIdChange={setActiveThreadId}
-          />
+          <ChatPane selectedFileIds={selectedFileIds} activeThreadId={activeThreadId} onActiveThreadIdChange={setActiveThreadId} />
         </main>
       </div>
     </div>

@@ -7,8 +7,8 @@ This repo contains a Clerk-authenticated file desk built around one shared domai
 
 ## Architecture
 
-- Shared backend domain: [`apps/openai_vectorstore_mcp_app/backend`](apps/openai_vectorstore_mcp_app/backend)
-- Companion web app: [`apps/openai_vectorstore_mcp_app/ui`](apps/openai_vectorstore_mcp_app/ui)
+- Shared backend domain: [`backend`](backend)
+- Companion web app: [`ui`](ui)
 - Integration tests: [`tests/integration/test_openai_vectorstore_mcp_app.py`](tests/integration/test_openai_vectorstore_mcp_app.py)
 
 The backend is intentionally split into:
@@ -35,8 +35,8 @@ The web app is a companion/demo surface. It uses the same `FileLibraryService` f
 
 1. Create `.env` values from [`.env.example`](.env.example).
 2. Install Python dependencies into the repo `.venv`.
-3. In [`apps/openai_vectorstore_mcp_app/ui`](apps/openai_vectorstore_mcp_app/ui), run `npm install`.
-4. Run `npm run build:watch` in [`apps/openai_vectorstore_mcp_app/ui`](apps/openai_vectorstore_mcp_app/ui).
+3. Run `npm install`.
+4. Run `npm run build:watch`.
 5. Start the HTTP app with `./.venv/bin/openai-vectorstore-mcp-http`.
 6. Open `http://localhost:8000/` for the companion web app.
 7. Point an MCP-compatible host at `http://localhost:8000/mcp`.
@@ -46,5 +46,5 @@ Set `CLERK_PUBLISHABLE_KEY` when you want local Clerk sign-in in the web app.
 ## Verification
 
 - `./.venv/bin/pytest tests/integration/test_openai_vectorstore_mcp_app.py`
-- `cd apps/openai_vectorstore_mcp_app/ui && npm run typecheck`
-- `cd apps/openai_vectorstore_mcp_app/ui && npm run build`
+- `npm run typecheck`
+- `npm run build`

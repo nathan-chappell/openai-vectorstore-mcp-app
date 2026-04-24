@@ -27,11 +27,7 @@ type ChatPaneProps = {
   onActiveThreadIdChange: (threadId: string | null) => void;
 };
 
-export function ChatPane({
-  selectedFileIds,
-  activeThreadId,
-  onActiveThreadIdChange,
-}: ChatPaneProps) {
+export function ChatPane({ selectedFileIds, activeThreadId, onActiveThreadIdChange }: ChatPaneProps) {
   const initialThreadRef = useRef<string | null>(activeThreadId);
   const threadIdRef = useRef<string | null>(activeThreadId);
 
@@ -82,20 +78,17 @@ export function ChatPane({
         prompts: [
           {
             label: "Summarize selected files",
-            prompt:
-              "Summarize the files I have selected in the explorer and tell me what stands out.",
+            prompt: "Summarize the files I have selected in the explorer and tell me what stands out.",
             icon: "document",
           },
           {
             label: "Find a document",
-            prompt:
-              "Search the library for the most relevant files about the topic I mention and explain why they matter.",
+            prompt: "Search the library for the most relevant files about the topic I mention and explain why they matter.",
             icon: "bolt",
           },
           {
             label: "Read before answering",
-            prompt:
-              "Use the relevant file tools before answering. Quote or reference the files you relied on.",
+            prompt: "Use the relevant file tools before answering. Quote or reference the files you relied on.",
             icon: "check-circle",
           },
         ],

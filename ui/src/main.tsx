@@ -15,8 +15,7 @@ function ConfigError() {
         <p className="eyebrow">Missing Config</p>
         <h1>Clerk publishable key not found</h1>
         <p>
-          Set <code>VITE_CLERK_PUBLISHABLE_KEY</code> in the repo root <code>.env</code> before
-          loading the web app.
+          Set <code>VITE_CLERK_PUBLISHABLE_KEY</code> in the repo root <code>.env</code> before loading the web app.
         </p>
       </div>
     </div>

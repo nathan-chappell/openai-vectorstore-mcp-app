@@ -1,1 +1,0 @@
-"""OpenAI file desk package."""

@@ -1,6 +1,6 @@
 # File Desk UI
 
-This subproject contains the companion React web app for the file desk.
+This subproject contains the companion React web app for the file desk. The npm workspace entrypoint now lives at the repo root.
 
 ## Commands
 
@@ -19,8 +19,8 @@ This subproject contains the companion React web app for the file desk.
 
 ## Local Development
 
-1. Run `npm install`.
-2. Run `npm run build:watch`.
+1. Run `npm install` from the repo root.
+2. Run `npm run build:watch` from the repo root.
 3. Start the backend HTTP app from the repo root with `./.venv/bin/openai-vectorstore-mcp-http`.
 4. Open `http://localhost:8000/`.
 

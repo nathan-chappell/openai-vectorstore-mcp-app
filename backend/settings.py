@@ -35,7 +35,7 @@ class AppSettings(BaseSettings):
             "http://127.0.0.1:8000",
         ]
     )
-    static_dir: str = "apps/openai_vectorstore_mcp_app/ui/dist"
+    static_dir: str = "ui/dist"
     chatkit_domain_key: str = "domain_pk_local_file_desk"
 
     openai_agent_model: str = "gpt-5.4-mini"
@@ -82,7 +82,7 @@ class AppSettings(BaseSettings):
 
     @property
     def normalized_static_dir(self) -> str:
-        return self.static_dir.strip().rstrip("/") or "apps/openai_vectorstore_mcp_app/ui/dist"
+        return self.static_dir.strip().rstrip("/") or "ui/dist"
 
     @property
     def effective_clerk_domain(self) -> str:

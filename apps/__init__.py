@@ -1,1 +1,0 @@
-"""Workspace MCP app packages."""

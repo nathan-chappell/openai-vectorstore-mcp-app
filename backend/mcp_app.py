@@ -79,6 +79,30 @@ def create_mcp_server(
     settings: AppSettings,
     services: AppServices,
 ) -> FastMCP:
+    return _build_mcp_server(
+        settings=settings,
+        services=services,
+        auth=create_mcp_auth_provider(settings, services.clerk_auth),
+    )
+
+
+def create_dev_mcp_server(
+    settings: AppSettings,
+    services: AppServices,
+) -> FastMCP:
+    return _build_mcp_server(
+        settings=settings,
+        services=services,
+        auth=None,
+    )
+
+
+def _build_mcp_server(
+    *,
+    settings: AppSettings,
+    services: AppServices,
+    auth: Any | None,
+) -> FastMCP:
     @asynccontextmanager
     async def server_lifespan(_: FastMCP[None]) -> AsyncIterator[None]:
         await services.database.ensure_ready()
@@ -96,10 +120,18 @@ def create_mcp_server(
             "list_tags to inspect the user's file library. Only call delete_file after the user "
             "has explicitly confirmed that the file should be removed."
         ),
-        auth=create_mcp_auth_provider(settings, services.clerk_auth),
+        auth=auth,
         lifespan=server_lifespan,
     )
+    _register_mcp_routes(server=server, services=services)
+    return server
 
+
+def _register_mcp_routes(
+    *,
+    server: FastMCP,
+    services: AppServices,
+) -> None:
     @server.tool(
         name="list_files",
         description="List the user's uploaded files with optional text and tag filtering.",
@@ -240,6 +272,14 @@ def create_mcp_server(
             file_id=file_id,
         )
 
+    _register_file_app(server=server, services=services)
+
+
+def _register_file_app(
+    *,
+    server: FastMCP,
+    services: AppServices,
+) -> None:
     file_app = FastMCPApp("File Library")
 
     @file_app.tool("refresh_files")
@@ -391,7 +431,6 @@ def create_mcp_server(
         )
 
     server.add_provider(file_app)
-    return server
 
 
 async def _ingest_browser_uploaded_file(

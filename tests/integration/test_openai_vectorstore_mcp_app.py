@@ -7,12 +7,14 @@ import httpx
 import pytest
 from chatkit.server import NonStreamingResult
 
-from apps.openai_vectorstore_mcp_app.backend.clerk import (
+from backend.clerk import (
     ClerkUserRecord,
     ClerkVerifiedSessionToken,
 )
-from apps.openai_vectorstore_mcp_app.backend.db import DatabaseManager
-from apps.openai_vectorstore_mcp_app.backend.models import (
+from backend import create_fastapi_app, create_mcp_server, create_services
+from backend.db import DatabaseManager
+from backend.mcp_app import create_dev_mcp_server
+from backend.models import (
     AppUser,
     DerivedArtifact,
     FileLibrary,
@@ -20,12 +22,7 @@ from apps.openai_vectorstore_mcp_app.backend.models import (
     FileTagLink,
     LibraryFile,
 )
-from apps.openai_vectorstore_mcp_app.backend import (
-    create_fastapi_app,
-    create_mcp_server,
-    create_services,
-)
-from apps.openai_vectorstore_mcp_app.backend.settings import AppSettings
+from backend.settings import AppSettings
 
 
 @pytest.fixture
@@ -82,6 +79,28 @@ async def test_mcp_server_exposes_file_desk_tools(configured_settings: AppSettin
 
 
 @pytest.mark.asyncio
+async def test_dev_mcp_server_exposes_file_desk_tools(configured_settings: AppSettings) -> None:
+    services = create_services(configured_settings)
+    server = create_dev_mcp_server(configured_settings, services)
+    try:
+        tools = {tool.name: tool for tool in await server.list_tools(run_middleware=False)}
+    finally:
+        await services.close()
+
+    assert set(tools) == {
+        "list_files",
+        "list_tags",
+        "search_files",
+        "get_file_detail",
+        "read_file_text",
+        "delete_file",
+        "open_file_library",
+    }
+    assert tools["open_file_library"].meta is not None
+    assert tools["open_file_library"].meta["ui"]["resourceUri"].startswith("ui://")
+
+
+@pytest.mark.asyncio
 async def test_fastapi_routes_cover_health_static_files_and_chat(
     configured_settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
@@ -117,19 +136,19 @@ async def test_fastapi_routes_cover_health_static_files_and_chat(
         return NonStreamingResult(b'{"ok":true}')
 
     monkeypatch.setattr(
-        "apps.openai_vectorstore_mcp_app.backend.clerk.ClerkAuthService.verify_session_token",
+        "backend.clerk.ClerkAuthService.verify_session_token",
         verify_session_token,
     )
     monkeypatch.setattr(
-        "apps.openai_vectorstore_mcp_app.backend.clerk.ClerkAuthService.get_user_record",
+        "backend.clerk.ClerkAuthService.get_user_record",
         get_user_record,
     )
     monkeypatch.setattr(
-        "apps.openai_vectorstore_mcp_app.backend.file_library_gateway.OpenAIFileLibraryGateway.delete_file",
+        "backend.file_library_gateway.OpenAIFileLibraryGateway.delete_file",
         delete_file_noop,
     )
     monkeypatch.setattr(
-        "apps.openai_vectorstore_mcp_app.backend.chatkit_server.FileDeskChatKitServer.process",
+        "backend.chatkit_server.FileDeskChatKitServer.process",
         fake_chat_process,
     )
 

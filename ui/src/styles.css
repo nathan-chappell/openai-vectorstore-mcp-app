@@ -77,8 +77,7 @@ button {
   gap: 18px;
   padding: 24px;
   border-radius: var(--radius-xl);
-  background:
-    linear-gradient(180deg, rgba(38, 46, 60, 0.98) 0%, rgba(20, 26, 35, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(38, 46, 60, 0.98) 0%, rgba(20, 26, 35, 0.98) 100%);
   box-shadow: var(--shadow);
   color: var(--sidebar-ink);
 }
@@ -277,7 +276,10 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
   padding: 14px;
-  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
 }
 
 .file-row:hover {
@@ -331,7 +333,10 @@ button {
   border: 0;
   border-radius: 999px;
   padding: 11px 16px;
-  transition: transform 180ms ease, opacity 180ms ease, background 180ms ease;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease,
+    background 180ms ease;
 }
 
 .select-toggle,

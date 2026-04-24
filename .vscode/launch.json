@@ -2,18 +2,34 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Knowledge Base Desk: Backend",
+      "name": "File Desk: Backend",
       "type": "debugpy",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
-      "module": "apps.openai_vectorstore_mcp_app.backend.http_main",
+      "module": "backend.http_main",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
       "justMyCode": false,
       "presentation": {
-        "group": "knowledge-base-desk",
+        "group": "file-desk",
         "order": 1
+      }
+    },
+    {
+      "name": "File Desk: MCP App Preview",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "fastmcp.cli",
+      "args": ["dev", "apps", "backend/fastmcp_dev.py:server", "--mcp-port", "8001", "--dev-port", "8080"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "presentation": {
+        "group": "file-desk",
+        "order": 2
       }
     }
   ]
