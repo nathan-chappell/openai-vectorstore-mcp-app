@@ -1,46 +1,27 @@
 {
-  "name": "@local/openai-knowledge-base-desk-ui",
+  "name": "@local/openai-file-desk-ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"assets,server\" --prefix-colors \"green,magenta\" \"npm run build:watch\" \"npm run dev:server\"",
-    "dev:ui": "npm run build:watch",
-    "dev:mock": "vite",
-    "dev:server": "bash -lc 'cd ../../.. && .venv/bin/python -m apps.openai_vectorstore_mcp_app.backend.http_main'",
+    "dev": "vite",
     "build": "vite build",
-    "build:watch:desk": "vite build --watch",
-    "build:watch": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"desk,host\" --prefix-colors \"green,blue\" \"npm run build:watch:desk\" \"npm run host:watch\"",
-    "host:build": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"index,sandbox\" --prefix-colors \"cyan,yellow\" \"cross-env INPUT=dev-host/index.html vite build --config vite.host.config.ts\" \"cross-env INPUT=dev-host/sandbox.html vite build --config vite.host.config.ts\"",
-    "host:watch": "cross-env NODE_ENV=development concurrently --kill-others-on-fail --names \"index,sandbox\" --prefix-colors \"cyan,yellow\" \"cross-env INPUT=dev-host/index.html vite build --watch --config vite.host.config.ts\" \"cross-env INPUT=dev-host/sandbox.html vite build --watch --config vite.host.config.ts\"",
-    "format": "prettier --write .",
+    "build:watch": "vite build --watch",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@clerk/clerk-react": "^5.61.6",
-    "@mantine/core": "^9.0.1",
-    "@mantine/hooks": "^9.0.1",
-    "@modelcontextprotocol/ext-apps": "^1.5.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "mermaid": "^11.12.0",
+    "@clerk/react": "^6.4.3",
+    "@openai/chatkit": "^1.6.0",
+    "@openai/chatkit-react": "^1.5.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
-    "concurrently": "^9.2.1",
-    "cors": "^2.8.6",
-    "cross-env": "^10.1.0",
-    "express": "^5.2.1",
-    "prettier": "^3.6.2",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.8",
-    "vite-plugin-singlefile": "^2.3.2"
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
   }
 }

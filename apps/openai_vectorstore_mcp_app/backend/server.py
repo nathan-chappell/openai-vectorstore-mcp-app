@@ -1,598 +1,695 @@
 from __future__ import annotations
 
+from base64 import b64decode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-import json
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import BaseModel, Field
-from starlette.datastructures import UploadFile
-from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from chatkit.server import StreamingResult
+from fastmcp import FastMCP, FastMCPApp
+from fastmcp.server.auth import MultiAuth
+from fastmcp.server.auth.providers.clerk import ClerkProvider
+from fastmcp.server.context import Context
+from mcp.types import ToolAnnotations
+from prefab_ui import PrefabApp
+from prefab_ui.actions import SetState, ShowToast
+from prefab_ui.actions.mcp import CallTool
+from prefab_ui.components import (
+    ERROR,
+    RESULT,
+    STATE,
+    Badge,
+    Button,
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+    Column,
+    DropZone,
+    Else,
+    ForEach,
+    H3,
+    If,
+    Muted,
+    Row,
+    Separator,
+    Small,
+    Text,
+)
+from pydantic import Field
 
-from .auth import ClerkTokenVerifier
+from .auth import ClerkTokenVerifier, get_current_clerk_access_token
+from .chat_store import FileDeskChatStore
+from .chatkit_server import FileDeskChatKitServer
 from .clerk import ClerkAuthService
 from .db import DatabaseManager
+from .file_library_service import DeleteFileResult, FileLibraryService, FileListResponse, TagListResponse
 from .knowledge_base_service import KnowledgeBaseService
 from .logging import configure_logging
 from .openai_gateway import OpenAIKnowledgeBaseGateway
 from .qa_agent import KnowledgeBaseQuestionAnswerer
+from .schemas import KnowledgeNodeDetail, SearchHit, UploadFinalizeResult, UploadSessionResult
 from .settings import AppSettings, get_settings
 from .upload_sessions import KnowledgeBaseSessionService
+from .web_auth import AuthenticatedWebUser, require_active_web_user
 
 logger = logging.getLogger(__name__)
 
-RESOURCE_MIME_TYPE = "text/html;profile=mcp-app"
-DESK_RESOURCE_URI = "ui://knowledge-base-desk/index.html"
-DESK_UI_PATH = Path(__file__).resolve().parent.parent / "ui" / "dist" / "mcp-app.html"
-DEV_HOST_INDEX_PATH = (
-    Path(__file__).resolve().parent.parent / "ui" / "host-dist" / "dev-host" / "index.html"
-)
-DEV_HOST_SANDBOX_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "ui"
-    / "host-dist"
-    / "dev-host"
-    / "sandbox.html"
-)
+
+@dataclass(slots=True)
+class AppServices:
+    settings: AppSettings
+    database: DatabaseManager
+    clerk_auth: ClerkAuthService
+    session_tokens: KnowledgeBaseSessionService
+    openai_gateway: OpenAIKnowledgeBaseGateway
+    question_answerer: KnowledgeBaseQuestionAnswerer
+    knowledge_base_service: KnowledgeBaseService
+    file_library: FileLibraryService
+    chat_store: FileDeskChatStore
+    chatkit_server: FileDeskChatKitServer
+    _closed: bool = False
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self.openai_gateway.close()
+        await self.clerk_auth.close()
+        await self.database.close()
 
 
-def create_server(settings: AppSettings | None = None) -> FastMCP:
-    """Create the FastMCP server for the knowledge-base desk."""
-
-    resolved_settings = settings or get_settings()
-    configure_logging(resolved_settings.log_level)
-
-    database = DatabaseManager(resolved_settings)
-    clerk_auth = ClerkAuthService(resolved_settings)
-    session_tokens = KnowledgeBaseSessionService(resolved_settings)
-    gateway = OpenAIKnowledgeBaseGateway(resolved_settings)
-    question_answerer = KnowledgeBaseQuestionAnswerer(resolved_settings)
+def create_services(settings: AppSettings) -> AppServices:
+    configure_logging(settings.log_level)
+    database = DatabaseManager(settings)
+    clerk_auth = ClerkAuthService(settings)
+    session_tokens = KnowledgeBaseSessionService(settings)
+    openai_gateway = OpenAIKnowledgeBaseGateway(settings)
+    question_answerer = KnowledgeBaseQuestionAnswerer(settings)
     knowledge_base_service = KnowledgeBaseService(
-        settings=resolved_settings,
+        settings=settings,
         database=database,
         clerk_auth=clerk_auth,
         session_tokens=session_tokens,
-        openai_gateway=gateway,
+        openai_gateway=openai_gateway,
         question_answerer=question_answerer,
     )
+    file_library = FileLibraryService(
+        database=database,
+        clerk_auth=clerk_auth,
+        session_tokens=session_tokens,
+        openai_gateway=openai_gateway,
+        legacy_service=knowledge_base_service,
+    )
+    chat_store = FileDeskChatStore(
+        database=database,
+        clerk_auth=clerk_auth,
+        legacy_service=knowledge_base_service,
+    )
+    chatkit_server = FileDeskChatKitServer(
+        settings=settings,
+        store=chat_store,
+        file_library=file_library,
+    )
+    return AppServices(
+        settings=settings,
+        database=database,
+        clerk_auth=clerk_auth,
+        session_tokens=session_tokens,
+        openai_gateway=openai_gateway,
+        question_answerer=question_answerer,
+        knowledge_base_service=knowledge_base_service,
+        file_library=file_library,
+        chat_store=chat_store,
+        chatkit_server=chatkit_server,
+    )
 
+
+def create_mcp_auth_provider(
+    settings: AppSettings,
+    clerk_auth: ClerkAuthService,
+):
+    session_verifier = ClerkTokenVerifier(clerk_auth, settings)
+    if not settings.clerk_client_id:
+        return session_verifier
+
+    clerk_provider = ClerkProvider(
+        domain=settings.effective_clerk_domain,
+        client_id=settings.clerk_client_id,
+        client_secret=settings.clerk_client_secret.get_secret_value()
+        if settings.clerk_client_secret is not None
+        else None,
+        base_url=settings.normalized_app_base_url,
+        resource_base_url=f"{settings.normalized_app_base_url}/mcp",
+        issuer_url=str(settings.clerk_issuer_url),
+        required_scopes=settings.mcp_required_scopes,
+    )
+    return MultiAuth(
+        server=clerk_provider,
+        verifiers=[session_verifier],
+        base_url=settings.normalized_app_base_url,
+        resource_base_url=f"{settings.normalized_app_base_url}/mcp",
+        required_scopes=settings.mcp_required_scopes,
+    )
+
+
+def create_mcp_server(
+    settings: AppSettings,
+    services: AppServices,
+) -> FastMCP:
     @asynccontextmanager
     async def server_lifespan(_: FastMCP[None]) -> AsyncIterator[None]:
+        await services.database.ensure_ready()
         try:
             yield None
         finally:
-            await gateway.close()
-            await clerk_auth.close()
-            await database.close()
+            await services.close()
 
     server = FastMCP(
-        name=resolved_settings.app_name,
+        name=settings.app_name,
         instructions=(
-            "Use query_knowledge_base to open the knowledge-base desk UI or run a grounded "
-            "knowledge-base query. Use get_knowledge_base_info for the current graph state "
-            "and optional node detail. Use update_knowledge_base, run_knowledge_base_command, "
-            "and confirm_knowledge_base_command for app-driven graph mutations, uploads, and "
-            "destructive confirmations."
+            "You are the MCP server for a personal file desk. Use open_file_library to surface "
+            "the interactive upload/manage UI when the user wants to browse files visually. Use "
+            "list_files, search_files, get_file_details, read_file_text, and list_tags to inspect "
+            "the user's library. Only call delete_file after the user has explicitly confirmed "
+            "that the file should be removed."
         ),
-        log_level=resolved_settings.log_level,
-        stateless_http=True,
+        auth=create_mcp_auth_provider(settings, services.clerk_auth),
         lifespan=server_lifespan,
-        auth=AuthSettings(
-            issuer_url=resolved_settings.clerk_issuer_url,
-            resource_server_url=resolved_settings.app_base_url,
-            required_scopes=resolved_settings.mcp_required_scopes,
-        ),
-        token_verifier=ClerkTokenVerifier(clerk_auth),
     )
 
     @server.tool(
-        name="query_knowledge_base",
-        title="Query Knowledge Base",
-        description=(
-            "Open the knowledge-base desk UI and optionally run QA, raw file search, or "
-            "branching search over the current graph and tag scope."
-        ),
+        name="list_files",
+        description="List the user's uploaded files with optional text and tag filtering.",
         annotations=ToolAnnotations(
             readOnlyHint=True,
             destructiveHint=False,
             idempotentHint=True,
-            openWorldHint=True,
+            openWorldHint=False,
         ),
-        meta={"ui": {"resourceUri": DESK_RESOURCE_URI}},
     )
-    async def query_knowledge_base(
+    async def list_files_tool(
         query: Annotated[str | None, Field(min_length=1)] = None,
-        mode: Literal["qa", "file_search", "branch_search"] = "qa",
-        selected_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        graph_selection_mode: Literal["self", "children", "descendants"] = "self",
         tag_ids: list[str] | None = None,
         tag_match_mode: Literal["all", "any"] = "all",
-        media_types: list[str] | None = None,
-        include_web: bool = False,
-        rewrite_query: bool = True,
-        branch_factor: Annotated[int, Field(ge=1, le=6)] = 3,
-        depth: Annotated[int, Field(ge=1, le=4)] = 2,
-        max_results: Annotated[int, Field(ge=1, le=20)] = 8,
-    ) -> CallToolResult:
-        payload = await knowledge_base_service.query_knowledge_base(
-            selected_node_id=selected_node_id,
-            graph_selection_mode=graph_selection_mode,
+        page: Annotated[int, Field(ge=1)] = 1,
+        page_size: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> FileListResponse:
+        return await services.file_library.list_files(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            query=query,
             tag_ids=tag_ids or [],
             tag_match_mode=tag_match_mode,
-            media_types=media_types or [],
-            include_web=include_web,
-            rewrite_query=rewrite_query,
-            branch_factor=branch_factor,
-            depth=depth,
-            max_results=max_results,
-            query=query,
-            mode=mode,
-        )
-        summary = {
-            "knowledge_base": "Opened the knowledge-base desk.",
-            "qa": "Answered a knowledge-base question.",
-            "file_search": "Ran knowledge-base file search.",
-            "branch_search": "Ran knowledge-base branching search.",
-        }[payload.kind]
-        return _tool_result(
-            summary,
-            payload,
-            meta={"ui": {"resourceUri": DESK_RESOURCE_URI}},
+            page=page,
+            page_size=page_size,
         )
 
     @server.tool(
-        name="get_knowledge_base_info",
-        title="Get Knowledge Base Info",
+        name="list_tags",
+        description="List the user's available file tags.",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def list_tags_tool() -> TagListResponse:
+        return await services.file_library.list_tags(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+        )
+
+    @server.tool(
+        name="search_files",
         description=(
-            "Return the current knowledge-base graph state and optionally the full detail for "
-            "one node."
+            "Run semantic search over the user's uploaded files. This is the best tool when the "
+            "user describes content but not the exact filename."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
             destructiveHint=False,
             idempotentHint=True,
-            openWorldHint=True,
+            openWorldHint=False,
         ),
     )
-    async def get_knowledge_base_info(
-        selected_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        graph_selection_mode: Literal["self", "children", "descendants"] = "self",
+    async def search_files_tool(
+        query: Annotated[str, Field(min_length=1)],
         tag_ids: list[str] | None = None,
         tag_match_mode: Literal["all", "any"] = "all",
-        media_types: list[str] | None = None,
-        include_web: bool = False,
-        rewrite_query: bool = True,
-        branch_factor: Annotated[int, Field(ge=1, le=6)] = 3,
-        depth: Annotated[int, Field(ge=1, le=4)] = 2,
         max_results: Annotated[int, Field(ge=1, le=20)] = 8,
-        detail_node_id: Annotated[str | None, Field(min_length=1)] = None,
-    ) -> CallToolResult:
-        payload = await knowledge_base_service.get_knowledge_base_info(
-            selected_node_id=selected_node_id,
-            graph_selection_mode=graph_selection_mode,
+    ) -> list[SearchHit]:
+        return await services.file_library.search_files(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            query=query,
             tag_ids=tag_ids or [],
             tag_match_mode=tag_match_mode,
-            media_types=media_types or [],
-            include_web=include_web,
-            rewrite_query=rewrite_query,
-            branch_factor=branch_factor,
-            depth=depth,
-            max_results=max_results,
-            detail_node_id=detail_node_id,
-        )
-        return _tool_result("Loaded knowledge-base info.", payload)
-
-    @server.tool(
-        name="update_knowledge_base",
-        title="Update Knowledge Base",
-        description=(
-            "Run app-driven typed graph mutations such as upload preparation, node rename, "
-            "tag changes, and low-level edge updates."
-        ),
-        annotations=ToolAnnotations(
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=True,
-        ),
-        meta={"ui": {"visibility": ["app"]}},
-    )
-    async def update_knowledge_base(
-        action: Literal[
-            "prepare_upload",
-            "rename_node",
-            "create_tag",
-            "set_node_tags",
-            "upsert_edge",
-            "delete_edge",
-            "delete_node",
-        ],
-        node_id: Annotated[str | None, Field(min_length=1)] = None,
-        edge_id: Annotated[str | None, Field(min_length=1)] = None,
-        from_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        to_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        tag_ids: list[str] | None = None,
-        title: Annotated[str | None, Field(min_length=1)] = None,
-        name: Annotated[str | None, Field(min_length=1)] = None,
-        color: Annotated[str | None, Field(min_length=1)] = None,
-        label: Annotated[str | None, Field(min_length=1)] = None,
-    ) -> CallToolResult:
-        payload = await knowledge_base_service.update_knowledge_base(
-            action=action,
-            node_id=node_id,
-            edge_id=edge_id,
-            from_node_id=from_node_id,
-            to_node_id=to_node_id,
-            tag_ids=tag_ids or [],
-            title=title,
-            name=name,
-            color=color,
-            label=label,
-        )
-        return _tool_result(f"Completed knowledge-base action {action}.", payload)
-
-    @server.tool(
-        name="run_knowledge_base_command",
-        title="Run Knowledge Base Command",
-        description=(
-            "Interpret a natural-language command for one graph mutation such as renaming a "
-            "node, creating a tag, connecting nodes, or requesting deletion."
-        ),
-        annotations=ToolAnnotations(
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=True,
-        ),
-        meta={"ui": {"visibility": ["app"]}},
-    )
-    async def run_knowledge_base_command(
-        command: Annotated[str, Field(min_length=1)],
-        selected_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        graph_selection_mode: Literal["self", "children", "descendants"] = "self",
-        tag_ids: list[str] | None = None,
-        tag_match_mode: Literal["all", "any"] = "all",
-        media_types: list[str] | None = None,
-        include_web: bool = False,
-        rewrite_query: bool = True,
-        branch_factor: Annotated[int, Field(ge=1, le=6)] = 3,
-        depth: Annotated[int, Field(ge=1, le=4)] = 2,
-        max_results: Annotated[int, Field(ge=1, le=20)] = 8,
-    ) -> CallToolResult:
-        payload = await knowledge_base_service.run_command(
-            raw_command=command,
-            selected_node_id=selected_node_id,
-            graph_selection_mode=graph_selection_mode,
-            tag_ids=tag_ids or [],
-            tag_match_mode=tag_match_mode,
-            media_types=media_types or [],
-            include_web=include_web,
-            rewrite_query=rewrite_query,
-            branch_factor=branch_factor,
-            depth=depth,
             max_results=max_results,
         )
-        return _tool_result("Processed the knowledge-base command.", payload)
 
     @server.tool(
-        name="confirm_knowledge_base_command",
-        title="Confirm Knowledge Base Command",
-        description="Confirm a pending destructive knowledge-base command token.",
+        name="get_file_details",
+        description="Load full metadata and derived artifact details for one uploaded file.",
         annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def get_file_details_tool(
+        file_id: Annotated[str, Field(min_length=1)],
+    ) -> KnowledgeNodeDetail:
+        return await services.file_library.get_file_detail(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            file_id=file_id,
+        )
+
+    @server.tool(
+        name="read_file_text",
+        description=(
+            "Read extracted text for one uploaded file. Use this after you know which file is "
+            "relevant and need more of its actual contents."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def read_file_text_tool(
+        file_id: Annotated[str, Field(min_length=1)],
+        max_chars: Annotated[int, Field(ge=250, le=20_000)] = 12_000,
+    ) -> str:
+        return await services.file_library.read_file_text(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            file_id=file_id,
+            max_chars=max_chars,
+        )
+
+    @server.tool(
+        name="delete_file",
+        description=(
+            "Delete one uploaded file. Only call this after the user has explicitly confirmed the "
+            "deletion in the current conversation by setting confirm=true."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
             destructiveHint=True,
             idempotentHint=False,
-            openWorldHint=True,
+            openWorldHint=False,
         ),
-        meta={"ui": {"visibility": ["app"]}},
     )
-    async def confirm_knowledge_base_command(
-        token: Annotated[str, Field(min_length=1)],
-        selected_node_id: Annotated[str | None, Field(min_length=1)] = None,
-        graph_selection_mode: Literal["self", "children", "descendants"] = "self",
-        tag_ids: list[str] | None = None,
-        tag_match_mode: Literal["all", "any"] = "all",
-        media_types: list[str] | None = None,
-        include_web: bool = False,
-        rewrite_query: bool = True,
-        branch_factor: Annotated[int, Field(ge=1, le=6)] = 3,
-        depth: Annotated[int, Field(ge=1, le=4)] = 2,
-        max_results: Annotated[int, Field(ge=1, le=20)] = 8,
-    ) -> CallToolResult:
-        payload = await knowledge_base_service.confirm_command(
-            token=token,
-            selected_node_id=selected_node_id,
-            graph_selection_mode=graph_selection_mode,
-            tag_ids=tag_ids or [],
-            tag_match_mode=tag_match_mode,
-            media_types=media_types or [],
-            include_web=include_web,
-            rewrite_query=rewrite_query,
-            branch_factor=branch_factor,
-            depth=depth,
-            max_results=max_results,
+    async def delete_file_tool(
+        file_id: Annotated[str, Field(min_length=1)],
+        confirm: bool = False,
+    ) -> DeleteFileResult | dict[str, object]:
+        if not confirm:
+            return {
+                "confirmation_required": True,
+                "file_id": file_id,
+                "message": (
+                    "Deletion requires explicit confirmation. Ask the user to confirm, then call "
+                    "delete_file again with confirm=true."
+                ),
+            }
+        return await services.file_library.delete_file(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            file_id=file_id,
         )
-        return _tool_result("Confirmed the knowledge-base command.", payload)
 
-    @server.resource(
-        DESK_RESOURCE_URI,
-        name="knowledge_base_desk_resource",
-        title="Knowledge Base Desk",
-        description=(
-            "Single-file React UI for graph navigation, uploads, filtering, search, branching "
-            "search, and agent-driven graph mutations."
-        ),
-        mime_type=RESOURCE_MIME_TYPE,
-    )
-    def knowledge_base_desk_resource() -> str:
-        if not DESK_UI_PATH.is_file():
-            logger.warning(
-                "mcp_app_resource_missing uri=%s path=%s",
-                DESK_RESOURCE_URI,
-                DESK_UI_PATH,
+    file_app = FastMCPApp("File Library")
+
+    @file_app.tool("refresh_files")
+    async def refresh_files_tool(ctx: Context) -> list[dict[str, Any]]:
+        del ctx
+        return [
+            item.model_dump(mode="json")
+            for item in (
+                await services.file_library.list_files(
+                    clerk_user_id=_current_mcp_clerk_user_id(),
+                    query=None,
+                    tag_ids=[],
+                    tag_match_mode="all",
+                    page=1,
+                    page_size=50,
+                )
+            ).files
+        ]
+
+    @file_app.tool("upload_files")
+    async def upload_files_tool(
+        files: list[dict[str, object]],
+        ctx: Context,
+    ) -> list[dict[str, Any]]:
+        for file_payload in files:
+            await _ingest_browser_uploaded_file(
+                services=services,
+                clerk_user_id=_current_mcp_clerk_user_id(),
+                file_payload=file_payload,
             )
-            return """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Knowledge Base Desk Build Required</title>
-</head>
-<body>
-  <main style="font-family: sans-serif; padding: 24px;">
-    <h1>Knowledge Base Desk UI not built yet</h1>
-    <p>Run <code>npm install</code> and <code>npm run build:watch</code> in <code>apps/openai_vectorstore_mcp_app/ui</code>, then reopen the tool.</p>
-  </main>
-</body>
-</html>
-"""
+        return await refresh_files_tool(ctx)
 
-        html = DESK_UI_PATH.read_text(encoding="utf-8")
-        logger.info(
-            "mcp_app_resource_ready uri=%s bytes=%s path=%s",
-            DESK_RESOURCE_URI,
-            len(html),
-            DESK_UI_PATH,
+    @file_app.tool("delete_file_from_ui")
+    async def delete_file_from_ui_tool(
+        file_id: str,
+        ctx: Context,
+    ) -> list[dict[str, Any]]:
+        await services.file_library.delete_file(
+            clerk_user_id=_current_mcp_clerk_user_id(),
+            file_id=file_id,
         )
-        return html
+        return await refresh_files_tool(ctx)
 
-    @server.custom_route("/api/uploads", methods=["POST"])
-    async def upload_route(request: Request) -> Response:
-        form = await request.form()
-        upload_token = form.get("upload_token")
-        if not isinstance(upload_token, str) or not upload_token:
-            return PlainTextResponse("Missing upload_token.", status_code=400)
+    @file_app.ui(
+        name="open_file_library",
+        title="Open File Library",
+        description="Open an interactive file library UI for uploading and managing files.",
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def open_file_library(ctx: Context) -> PrefabApp:
+        existing_files = await refresh_files_tool(ctx)
+        with Card(css_class="max-w-4xl mx-auto") as view:
+            with CardHeader(), Column(gap=1):
+                CardTitle("File Library")
+                CardDescription(
+                    "Upload a few files, keep an eye on what is already stored, and delete "
+                    "anything you no longer want the assistant to use."
+                )
 
-        claims = session_tokens.verify_upload_session(upload_token)
+            with CardContent(), Column(gap=4):
+                with Row(gap=2, align="center"):
+                    H3("Upload")
+                    Button(
+                        "Refresh",
+                        on_click=CallTool(
+                            "refresh_files",
+                            on_success=SetState("files", RESULT),
+                            on_error=ShowToast(ERROR, variant="error"),
+                        ),
+                    )
+
+                DropZone(
+                    name="pending",
+                    icon="folder-up",
+                    label="Drop files here",
+                    description="Any file type, up to 25MB per file.",
+                    multiple=True,
+                    max_size=25 * 1024 * 1024,
+                )
+
+                with If(STATE.pending.length()), Column(gap=2):
+                    with ForEach("pending") as pending_file, Row(gap=2, align="center"):
+                        Small(pending_file.name)  # ty:ignore[invalid-argument-type]
+                        Muted(pending_file.type)  # ty:ignore[invalid-argument-type]
+                    Button(
+                        "Upload to library",
+                        on_click=CallTool(
+                            "upload_files",
+                            arguments={"files": STATE.pending},
+                            on_success=[
+                                SetState("files", RESULT),
+                                SetState("pending", []),
+                                ShowToast("Files uploaded.", variant="success"),
+                            ],
+                            on_error=ShowToast(ERROR, variant="error"),
+                        ),
+                    )
+
+                Separator()
+                with Row(gap=2, align="center"):
+                    H3("Stored Files")
+                    with If(STATE.files.length()):
+                        Badge(STATE.files.length(), variant="secondary")  # ty:ignore[invalid-argument-type]
+
+                with If(STATE.files.length()), Column(gap=2):
+                    with (
+                        ForEach("files") as file_row,
+                        Row(
+                            gap=3,
+                            align="center",
+                            css_class="justify-between rounded-xl border border-slate-200 px-3 py-3",
+                        ),
+                    ):
+                        with Column(gap=0):
+                            Small(file_row.display_title)  # ty:ignore[invalid-argument-type]
+                            Muted(file_row.original_filename)  # ty:ignore[invalid-argument-type]
+                        with Row(gap=2, align="center"):
+                            Badge(file_row.media_type, variant="outline")  # ty:ignore[invalid-argument-type]
+                            Badge(file_row.status, variant="secondary")  # ty:ignore[invalid-argument-type]
+                            Button(
+                                "Delete",
+                                on_click=CallTool(
+                                    "delete_file_from_ui",
+                                    arguments={"file_id": file_row.id},
+                                    on_success=[
+                                        SetState("files", RESULT),
+                                        ShowToast("File deleted.", variant="success"),
+                                    ],
+                                    on_error=ShowToast(ERROR, variant="error"),
+                                ),
+                            )
+
+                with Else(), Column(gap=1):
+                    Text("No files uploaded yet.")
+                    Muted("Once files land here, the assistant can search and read them.")
+
+        return PrefabApp(
+            title="File Library",
+            view=view,
+            state={
+                "pending": [],
+                "files": existing_files,
+            },
+        )
+
+    server.add_provider(file_app)
+    return server
+
+
+def create_fastapi_app(settings: AppSettings | None = None) -> FastAPI:
+    resolved_settings = settings or get_settings()
+    services = create_services(resolved_settings)
+    mcp_server = create_mcp_server(resolved_settings, services)
+    mcp_http_app = mcp_server.http_app(path="/", transport="streamable-http")
+    static_dir = Path(resolved_settings.normalized_static_dir)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.services = services
+        app.state.mcp_server = mcp_server
+        async with mcp_http_app.lifespan(mcp_http_app):
+            yield
+
+    app = FastAPI(title=resolved_settings.app_name, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=resolved_settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["mcp-session-id"],
+    )
+    app.mount("/mcp", mcp_http_app)
+
+    @app.get("/health")
+    async def healthcheck() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/api/files")
+    async def list_files_api(
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+        query: str | None = Query(default=None, min_length=1),
+        tag_ids: list[str] | None = Query(default=None),
+        tag_match_mode: Literal["all", "any"] = Query(default="all"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+    ) -> FileListResponse:
+        return await services.file_library.list_files(
+            clerk_user_id=user.clerk_user_id,
+            query=query,
+            tag_ids=tag_ids or [],
+            tag_match_mode=tag_match_mode,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.get("/api/files/{file_id}")
+    async def get_file_detail_api(
+        file_id: str,
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> KnowledgeNodeDetail:
+        return await services.file_library.get_file_detail(
+            clerk_user_id=user.clerk_user_id,
+            file_id=file_id,
+        )
+
+    @app.delete("/api/files/{file_id}")
+    async def delete_file_api(
+        file_id: str,
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> DeleteFileResult:
+        return await services.file_library.delete_file(
+            clerk_user_id=user.clerk_user_id,
+            file_id=file_id,
+        )
+
+    @app.get("/api/tags")
+    async def list_tags_api(
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> TagListResponse:
+        return await services.file_library.list_tags(clerk_user_id=user.clerk_user_id)
+
+    @app.post("/api/uploads/session")
+    async def issue_upload_session_api(
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> UploadSessionResult:
+        return await services.file_library.issue_upload_session(clerk_user_id=user.clerk_user_id)
+
+    @app.post("/api/uploads")
+    async def upload_file_api(
+        file: UploadFile = File(...),
+        upload_token: str = Form(...),
+        tag_ids: list[str] | None = Form(default=None),
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> UploadFinalizeResult:
+        claims = services.session_tokens.verify_upload_session(upload_token)
         if claims is None:
-            return PlainTextResponse("Upload token expired or invalid.", status_code=403)
-
-        uploaded_file = form.get("file")
-        if not isinstance(uploaded_file, UploadFile):
-            return PlainTextResponse("Missing file upload.", status_code=400)
-
-        tag_ids = _parse_tag_ids(form)
-        with NamedTemporaryFile(delete=False) as temp_file:
-            temp_path = Path(temp_file.name)
-            while True:
-                chunk = await uploaded_file.read(1024 * 1024)
-                if not chunk:
-                    break
-                temp_file.write(chunk)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload token.")
+        if claims.clerk_user_id != user.clerk_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Upload token does not belong to this user."
+            )
+        local_path = await _write_upload_to_tempfile(file)
         try:
-            payload = await knowledge_base_service.ingest_upload(
+            return await services.knowledge_base_service.ingest_upload(
                 claims=claims,
-                local_path=temp_path,
-                filename=uploaded_file.filename or temp_path.name,
-                declared_media_type=uploaded_file.content_type,
-                tag_ids=tag_ids,
+                local_path=local_path,
+                filename=file.filename or "upload",
+                declared_media_type=file.content_type,
+                tag_ids=tag_ids or [],
             )
         finally:
-            temp_path.unlink(missing_ok=True)
+            local_path.unlink(missing_ok=True)
 
-        return JSONResponse(payload.model_dump(mode="json"))
-
-    @server.custom_route("/api/nodes/{node_id}/content", methods=["GET"])
-    async def node_download_route(request: Request) -> Response:
-        token = request.query_params.get("token")
-        node_id = request.path_params["node_id"]
-        if token is None:
-            return PlainTextResponse("Missing token.", status_code=400)
-        claims = session_tokens.verify_node_download(token)
+    @app.get("/api/nodes/{node_id}/content")
+    async def download_file_api(
+        node_id: str,
+        token: str = Query(..., min_length=1),
+    ) -> Response:
+        claims = services.session_tokens.verify_node_download(token)
         if claims is None or claims.node_id != node_id:
-            return PlainTextResponse("Invalid download token.", status_code=403)
-        detail, payload = await knowledge_base_service.download_node_bytes(claims=claims)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid download token.")
+        detail, payload = await services.knowledge_base_service.download_node_bytes(claims=claims)
         headers = {
-            "content-disposition": f'inline; filename="{detail.original_filename}"',
+            "Content-Disposition": f'attachment; filename="{detail.original_filename}"',
         }
         return Response(
-            payload,
+            content=payload,
             media_type=detail.original_mime_type or detail.media_type,
             headers=headers,
         )
 
-    @server.custom_route("/api/dev-auth-config", methods=["GET"])
-    async def dev_auth_config_route(_request: Request) -> Response:
-        return JSONResponse(
-            {
-                "clerk_publishable_key": resolved_settings.clerk_publishable_key,
-                "app_name": resolved_settings.app_name,
-            }
+    @app.post("/api/chatkit")
+    async def chatkit_entrypoint(
+        request: Request,
+        user: AuthenticatedWebUser = Depends(require_active_web_user),
+    ) -> Response:
+        raw_request = await request.body()
+        context = await services.chatkit_server.build_request_context(
+            raw_request,
+            clerk_user_id=user.clerk_user_id,
+            user_email=user.email,
+            display_name=user.display_name,
+            bearer_token=user.bearer_token,
+            request_app=request.app,
         )
+        result = await services.chatkit_server.process(raw_request, context)
+        if isinstance(result, StreamingResult):
+            return StreamingResponse(result, media_type="text/event-stream")
+        return Response(content=result.json, media_type="application/json")
 
-    @server.custom_route("/", methods=["GET"])
-    async def dev_host_root_route(_request: Request) -> Response:
-        html = _load_dev_host_html(
-            DEV_HOST_INDEX_PATH,
-            label="dev_host_index",
-            title="Knowledge Base Dev Host Build Required",
-        )
-        return Response(
-            html,
-            media_type="text/html",
-            headers=_build_dev_host_headers(),
-        )
+    @app.get("/{full_path:path}")
+    async def spa_entrypoint(full_path: str) -> FileResponse:
+        index_path = static_dir / "index.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=404, detail="Frontend build not found.")
+        candidate = static_dir / full_path
+        if full_path and candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_path)
 
-    @server.custom_route("/index.html", methods=["GET"])
-    async def dev_host_index_html_route(_request: Request) -> Response:
-        html = _load_dev_host_html(
-            DEV_HOST_INDEX_PATH,
-            label="dev_host_index",
-            title="Knowledge Base Dev Host Build Required",
-        )
-        return Response(
-            html,
-            media_type="text/html",
-            headers=_build_dev_host_headers(),
-        )
-
-    @server.custom_route("/sandbox", methods=["GET"])
-    async def dev_host_sandbox_route(request: Request) -> Response:
-        csp_header: str | None = None
-        raw_csp = request.query_params.get("csp")
-        if raw_csp is not None:
-            try:
-                parsed_csp = json.loads(raw_csp)
-            except json.JSONDecodeError:
-                logger.warning("dev_host_sandbox_invalid_csp_json")
-            else:
-                if isinstance(parsed_csp, dict):
-                    csp_header = _build_dev_host_sandbox_csp(parsed_csp)
-                else:
-                    logger.warning(
-                        "dev_host_sandbox_invalid_csp_payload payload_type=%s",
-                        type(parsed_csp).__name__,
-                    )
-
-        html = _load_dev_host_html(
-            DEV_HOST_SANDBOX_PATH,
-            label="dev_host_sandbox",
-            title="Knowledge Base Sandbox Build Required",
-        )
-        return Response(
-            html,
-            media_type="text/html",
-            headers=_build_dev_host_headers(content_security_policy=csp_header),
-        )
-
-    logger.info(
-        "mcp_server_ready name=%s tools=%s",
-        resolved_settings.app_name,
-        [
-            "query_knowledge_base",
-            "get_knowledge_base_info",
-            "update_knowledge_base",
-            "run_knowledge_base_command",
-            "confirm_knowledge_base_command",
-        ],
-    )
-    return server
+    return app
 
 
-def _parse_tag_ids(form) -> list[str]:
-    raw_values = [value for value in form.getlist("tag_ids") if isinstance(value, str)]
-    if not raw_values:
-        return []
-    if len(raw_values) == 1:
-        raw_value = raw_values[0].strip()
-        if not raw_value:
-            return []
-        if raw_value.startswith("["):
-            parsed = json.loads(raw_value)
-            if not isinstance(parsed, list):
-                raise ValueError("tag_ids must decode to a JSON array.")
-            return [str(item) for item in parsed if str(item)]
-        if "," in raw_value:
-            return [part.strip() for part in raw_value.split(",") if part.strip()]
-    return [value.strip() for value in raw_values if value.strip()]
-
-
-def _load_dev_host_html(path: Path, *, label: str, title: str) -> str:
-    if not path.is_file():
-        logger.warning("dev_host_asset_missing label=%s path=%s", label, path)
-        return _render_dev_host_build_required_page(title=title, missing_path=path)
-
-    html = path.read_text(encoding="utf-8")
-    logger.info("dev_host_asset_ready label=%s bytes=%s path=%s", label, len(html), path)
-    return html
-
-
-def _render_dev_host_build_required_page(*, title: str, missing_path: Path) -> str:
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title}</title>
-</head>
-<body>
-  <main style="font-family: sans-serif; padding: 24px;">
-    <h1>{title}</h1>
-    <p>The backend could not find the built dev-host asset at <code>{missing_path}</code>.</p>
-    <p>Run <code>npm install</code> and <code>npm run build:watch</code> in <code>apps/openai_vectorstore_mcp_app/ui</code>, then reload this page.</p>
-  </main>
-</body>
-</html>
-"""
-
-
-def _build_dev_host_headers(
-    *, content_security_policy: str | None = None
-) -> dict[str, str]:
-    headers = {
-        "cache-control": "no-cache, no-store, must-revalidate",
-        "pragma": "no-cache",
-        "expires": "0",
-    }
-    if content_security_policy is not None:
-        headers["content-security-policy"] = content_security_policy
-    return headers
-
-
-def _build_dev_host_sandbox_csp(csp: dict[str, object]) -> str:
-    resource_domains = " ".join(_sanitize_csp_domains(csp.get("resourceDomains")))
-    connect_domains = " ".join(_sanitize_csp_domains(csp.get("connectDomains")))
-    frame_domains = " ".join(_sanitize_csp_domains(csp.get("frameDomains")))
-    base_uri_domains = " ".join(_sanitize_csp_domains(csp.get("baseUriDomains")))
-
-    directives = [
-        "default-src 'self' 'unsafe-inline'",
-        f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: {resource_domains}".strip(),
-        f"style-src 'self' 'unsafe-inline' blob: data: {resource_domains}".strip(),
-        f"img-src 'self' data: blob: {resource_domains}".strip(),
-        f"font-src 'self' data: blob: {resource_domains}".strip(),
-        f"media-src 'self' data: blob: {resource_domains}".strip(),
-        f"connect-src 'self' {connect_domains}".strip(),
-        f"worker-src 'self' blob: {resource_domains}".strip(),
-        f"frame-src {frame_domains}" if frame_domains else "frame-src 'none'",
-        "object-src 'none'",
-        f"base-uri {base_uri_domains}" if base_uri_domains else "base-uri 'none'",
-    ]
-    return "; ".join(directives)
-
-
-def _sanitize_csp_domains(raw_value: object) -> list[str]:
-    if not isinstance(raw_value, list):
-        return []
-    return [
-        value
-        for value in raw_value
-        if isinstance(value, str) and not any(char in value for char in ";\r\n'\" ")
-    ]
-
-
-def _tool_result(
-    summary: str,
-    payload: BaseModel,
+async def _ingest_browser_uploaded_file(
     *,
-    meta: dict[str, object] | None = None,
-) -> CallToolResult:
-    return CallToolResult(
-        _meta=meta,
-        content=[TextContent(type="text", text=summary)],
-        structuredContent=payload.model_dump(mode="json"),
-    )
+    services: AppServices,
+    clerk_user_id: str,
+    file_payload: dict[str, object],
+) -> None:
+    filename = _required_string(file_payload, "name")
+    encoded_data = _required_string(file_payload, "data")
+    media_type = _optional_string(file_payload, "type")
+    suffix = Path(filename).suffix
+    with NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+        temp_file.write(b64decode(encoded_data))
+    try:
+        await services.file_library.ingest_file_for_user(
+            clerk_user_id=clerk_user_id,
+            local_path=temp_path,
+            filename=filename,
+            declared_media_type=media_type,
+            tag_ids=[],
+        )
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+async def _write_upload_to_tempfile(file: UploadFile) -> Path:
+    suffix = Path(file.filename or "upload").suffix
+    with NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            temp_file.write(chunk)
+    await file.close()
+    return temp_path
+
+
+def _current_mcp_clerk_user_id() -> str:
+    token = get_current_clerk_access_token()
+    if token is None:
+        return "local-dev"
+    return token.subject
+
+
+def _required_string(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Expected a non-empty string field: {key}")
+    return value.strip()
+
+
+def _optional_string(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None

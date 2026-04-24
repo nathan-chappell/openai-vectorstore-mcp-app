@@ -2,6 +2,7 @@ aiosqlite
 asyncpg
 colorlog
 debugpy
+fastmcp
 httpx
 itsdangerous
 mcp

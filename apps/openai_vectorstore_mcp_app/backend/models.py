@@ -40,6 +40,8 @@ class AppUser(Base):
         uselist=False,
     )
     created_nodes: Mapped[list["KnowledgeNode"]] = relationship(back_populates="created_by")
+    chat_threads: Mapped[list["AppChatThread"]] = relationship(back_populates="user")
+    chat_attachments: Mapped[list["AppChatAttachment"]] = relationship(back_populates="user")
 
 
 class KnowledgeBase(Base):
@@ -273,3 +275,78 @@ class KnowledgeNodeTag(Base):
 
     node: Mapped[KnowledgeNode] = relationship(back_populates="tag_links")
     tag: Mapped[KnowledgeTag] = relationship(back_populates="node_links")
+
+
+class AppChatThread(Base):
+    __tablename__ = "app_chat_thread"
+    __table_args__ = (Index("ix_app_chat_thread_user_updated_sequence", "user_id", "updated_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_user.id"), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    status_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    allowed_image_domains_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    updated_sequence: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped[AppUser] = relationship(back_populates="chat_threads")
+    entries: Mapped[list["AppChatEntry"]] = relationship(
+        back_populates="thread",
+        cascade="all, delete-orphan",
+    )
+
+
+class AppChatEntry(Base):
+    __tablename__ = "app_chat_entry"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "sequence", name="uq_app_chat_entry_thread_sequence"),
+        Index("ix_app_chat_entry_thread_sequence", "thread_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("app_chat_thread.id"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    item_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    thread: Mapped[AppChatThread] = relationship(back_populates="entries")
+
+
+class AppChatAttachment(Base):
+    __tablename__ = "app_chat_attachment"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_user.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped[AppUser | None] = relationship(back_populates="chat_attachments")

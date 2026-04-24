@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from .logging import configure_logging
-from .server import create_server
+from .server import create_mcp_server, create_services
 from .settings import get_settings
 
 
@@ -19,7 +19,8 @@ def main() -> None:
         Path.cwd(),
     )
 
-    server = create_server(settings)
+    services = create_services(settings)
+    server = create_mcp_server(settings, services)
     server.run(transport="stdio")
 
 
