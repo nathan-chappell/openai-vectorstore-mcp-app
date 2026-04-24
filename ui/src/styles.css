@@ -32,6 +32,7 @@
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -63,18 +64,36 @@ button {
   padding: 24px;
 }
 
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.screen-shell {
+  display: grid;
+  place-items: center;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
   gap: 24px;
   min-height: calc(100vh - 48px);
   min-height: calc(100dvh - 48px);
+  height: calc(100vh - 48px);
+  height: calc(100dvh - 48px);
+  min-width: 0;
+  align-items: stretch;
 }
 
 .explorer-panel {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   padding: 24px;
   border-radius: var(--radius-xl);
   background: linear-gradient(180deg, rgba(38, 46, 60, 0.98) 0%, rgba(20, 26, 35, 0.98) 100%);
@@ -83,9 +102,12 @@ button {
 }
 
 .chat-panel {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   padding: 24px;
   border-radius: var(--radius-xl);
   background: linear-gradient(180deg, rgba(255, 252, 247, 0.94) 0%, rgba(247, 240, 231, 0.92) 100%);
@@ -155,6 +177,13 @@ button {
   background: var(--paper);
   border-color: var(--line);
   color: var(--ink);
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
 }
 
 .explorer-card--stretch {
@@ -432,7 +461,9 @@ button {
 
 .chatkit-shell {
   min-height: 0;
-  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 24px;
   border: 1px solid var(--line);
@@ -440,7 +471,16 @@ button {
 }
 
 .chatkit-shell > * {
-  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.chatkit-shell openai-chatkit {
+  display: block;
+  min-width: 0;
+  min-height: 100%;
+  width: 100%;
 }
 
 .status-card code {
@@ -451,18 +491,27 @@ button {
 }
 
 @media (max-width: 1080px) {
+  .app-shell {
+    height: auto;
+    overflow: visible;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
     min-height: auto;
+    height: auto;
   }
 
   .explorer-panel,
   .chat-panel {
     min-height: auto;
+    height: auto;
+    overflow: visible;
   }
 
   .chatkit-shell {
     min-height: 70vh;
+    height: auto;
   }
 }
 

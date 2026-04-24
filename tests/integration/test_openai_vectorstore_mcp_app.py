@@ -54,8 +54,29 @@ def test_settings_load_from_env(configured_settings: AppSettings) -> None:
     assert configured_settings.clerk_secret_key.get_secret_value() == "test-clerk-secret"
     assert configured_settings.app_signing_secret.get_secret_value() == "test-signing-secret"
     assert configured_settings.openai_agent_model == "gpt-5.4-mini"
+    assert configured_settings.openai_vision_model == "gpt-5.4-mini"
     assert configured_settings.mcp_required_scopes == ["openid", "email", "profile"]
     assert configured_settings.normalized_static_dir
+
+
+def test_settings_map_legacy_static_dir_to_root_ui_dist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    fallback_static_dir = repo_root / "ui" / "dist"
+    fallback_static_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("CLERK_SECRET_KEY", "test-clerk-secret")
+    monkeypatch.setenv("APP_SIGNING_SECRET", "test-signing-secret")
+    monkeypatch.setenv("CLERK_ISSUER_URL", "https://clerk.example.com")
+    monkeypatch.setenv("STATIC_DIR", "apps/openai_vectorstore_mcp_app/ui/dist")
+    monkeypatch.setattr("backend.settings.PROJECT_ROOT", repo_root)
+
+    settings = AppSettings()
+
+    assert settings.normalized_static_dir == str(fallback_static_dir)
 
 
 @pytest.mark.asyncio
@@ -387,6 +408,16 @@ async def test_fastapi_routes_cover_health_static_files_and_chat(
             root = await client.get("/")
             assert root.status_code == 200
             assert "File Desk" in root.text
+
+            auth_response = await client.get("/api/auth/me", headers=headers)
+            assert auth_response.status_code == 200
+            assert auth_response.json() == {
+                "clerk_user_id": "user_123",
+                "display_name": "File Desk Owner",
+                "primary_email": "owner@example.com",
+                "active": True,
+                "role": "admin",
+            }
 
             files_response = await client.get("/api/files", headers=headers)
             assert files_response.status_code == 200

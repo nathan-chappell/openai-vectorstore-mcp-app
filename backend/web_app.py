@@ -18,11 +18,12 @@ from .schemas import (
     FileDetail,
     FileListResponse,
     TagListResponse,
+    UserSummary,
     UploadFinalizeResult,
     UploadSessionResult,
 )
 from .settings import AppSettings, get_settings
-from .web_auth import AuthenticatedWebUser, require_active_web_user
+from .web_auth import AuthenticatedWebUser, require_active_web_user, require_authenticated_web_user
 
 
 def create_fastapi_app(settings: AppSettings | None = None) -> FastAPI:
@@ -53,6 +54,18 @@ def create_fastapi_app(settings: AppSettings | None = None) -> FastAPI:
     @app.get("/health")
     async def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/auth/me")
+    async def auth_me_api(
+        user: AuthenticatedWebUser = Depends(require_authenticated_web_user),
+    ) -> UserSummary:
+        return UserSummary(
+            clerk_user_id=user.clerk_user_id,
+            display_name=user.display_name,
+            primary_email=user.email,
+            active=user.active,
+            role=user.role,
+        )
 
     @app.get("/api/files")
     async def list_files_api(

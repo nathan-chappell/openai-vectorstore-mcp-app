@@ -6,6 +6,14 @@ export type TagSummary = {
   file_count: number;
 };
 
+export type AuthUser = {
+  clerk_user_id: string;
+  display_name: string;
+  primary_email: string | null;
+  active: boolean;
+  role: string | null;
+};
+
 export type DerivedArtifactSummary = {
   id: string;
   kind: string;

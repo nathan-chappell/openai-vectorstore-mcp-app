@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class AppSettings(BaseSettings):
@@ -20,7 +23,6 @@ class AppSettings(BaseSettings):
     clerk_domain: str | None = None
     clerk_client_id: str | None = None
     clerk_client_secret: SecretStr | None = None
-    clerk_publishable_key: str | None = None
     clerk_active_metadata_key: str = "active"
     clerk_role_metadata_key: str = "role"
     clerk_clock_skew_ms: int = 5_000
@@ -36,10 +38,9 @@ class AppSettings(BaseSettings):
         ]
     )
     static_dir: str = "ui/dist"
-    chatkit_domain_key: str = "domain_pk_local_file_desk"
 
     openai_agent_model: str = "gpt-5.4-mini"
-    openai_vision_model: str = "gpt-4.1-mini"
+    openai_vision_model: str = "gpt-5.4-mini"
     openai_audio_transcription_model: str = "gpt-4o-transcribe-diarize"
     openai_poll_interval_ms: int = 1_000
 
@@ -82,7 +83,19 @@ class AppSettings(BaseSettings):
 
     @property
     def normalized_static_dir(self) -> str:
-        return self.static_dir.strip().rstrip("/") or "ui/dist"
+        default_static_dir = PROJECT_ROOT / "ui" / "dist"
+        normalized = self.static_dir.strip().rstrip("/")
+        if not normalized:
+            return str(default_static_dir)
+
+        candidate = Path(normalized).expanduser()
+        if not candidate.is_absolute():
+            candidate = PROJECT_ROOT / candidate
+
+        legacy_static_dir = PROJECT_ROOT / "apps" / "openai_vectorstore_mcp_app" / "ui" / "dist"
+        if candidate == legacy_static_dir:
+            return str(default_static_dir)
+        return str(candidate)
 
     @property
     def effective_clerk_domain(self) -> str:

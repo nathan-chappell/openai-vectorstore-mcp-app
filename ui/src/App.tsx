@@ -1,15 +1,18 @@
 import { useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, startTransition, type ChangeEvent } from "react";
 import { SignInButton, UserButton, useAuth, useUser } from "@clerk/react";
 
-import { ApiError, deleteFile, getFileDetail, listFiles, listTags, setClerkTokenGetter, uploadFile } from "./api";
+import { ApiError, deleteFile, getAuthenticatedUser, getFileDetail, listFiles, listTags, setClerkTokenGetter, uploadFile } from "./api";
 import { ChatPane } from "./ChatPane";
-import type { FileDetail, FileSummary, TagSummary } from "./types";
+import type { AuthUser, FileDetail, FileSummary, TagSummary } from "./types";
 
 const PAGE_SIZE = 20;
 
 export default function App() {
   const { isLoaded, isSignedIn, getToken } = useAuth();
   const { user } = useUser();
+  const [authenticatedUser, setAuthenticatedUser] = useState<AuthUser | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthHydrating, setIsAuthHydrating] = useState(true);
 
   useEffect(() => {
     setClerkTokenGetter(async () => (await getToken()) ?? null);
@@ -18,13 +21,48 @@ export default function App() {
     };
   }, [getToken]);
 
-  if (!isLoaded) {
+  const hydrateAuthenticatedUser = useEffectEvent(async () => {
+    if (!isLoaded) {
+      return;
+    }
+
+    if (!isSignedIn) {
+      setAuthenticatedUser(null);
+      setAuthError(null);
+      setIsAuthHydrating(false);
+      return;
+    }
+
+    setIsAuthHydrating(true);
+    try {
+      const nextUser = await getAuthenticatedUser();
+      setAuthenticatedUser(nextUser);
+      setAuthError(null);
+    } catch (error) {
+      setAuthenticatedUser(null);
+      if (error instanceof ApiError) {
+        setAuthError(error.message);
+      } else if (error instanceof Error) {
+        setAuthError(error.message);
+      } else {
+        setAuthError("We could not verify your authenticated session.");
+      }
+    } finally {
+      setIsAuthHydrating(false);
+    }
+  });
+
+  useEffect(() => {
+    void hydrateAuthenticatedUser();
+  }, [isLoaded, isSignedIn]);
+
+  if (!isLoaded || (isSignedIn && isAuthHydrating)) {
     return (
       <div className="screen-shell">
         <div className="status-card">
           <p className="eyebrow">Loading</p>
           <h1>Preparing your file desk</h1>
-          <p>Connecting Clerk, loading the explorer, and getting the chat surface ready.</p>
+          <p>Checking your Clerk session, backend access, and ChatKit workspace.</p>
         </div>
       </div>
     );
@@ -50,7 +88,56 @@ export default function App() {
     );
   }
 
-  return <Workspace userLabel={user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? "Signed-in user"} />;
+  if (authError) {
+    return (
+      <div className="screen-shell">
+        <div className="status-card">
+          <p className="eyebrow">Access Check Failed</p>
+          <h1>We could not open the file desk yet</h1>
+          <p>{authError}</p>
+          <div className="status-actions">
+            <button className="primary-button" type="button" onClick={() => void hydrateAuthenticatedUser()}>
+              Retry
+            </button>
+            <UserButton />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authenticatedUser?.active) {
+    return (
+      <div className="screen-shell">
+        <div className="status-card">
+          <p className="eyebrow">Access Pending</p>
+          <h1>Your Clerk sign-in worked</h1>
+          <p>
+            Your account is signed in, but the backend still marks it as inactive. Ask an admin to set the active flag in Clerk private
+            metadata, then refresh this page.
+          </p>
+          <div className="status-actions">
+            <button className="primary-button" type="button" onClick={() => void hydrateAuthenticatedUser()}>
+              Check again
+            </button>
+            <UserButton />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Workspace
+      userLabel={
+        authenticatedUser.display_name ||
+        user?.fullName ||
+        authenticatedUser.primary_email ||
+        user?.primaryEmailAddress?.emailAddress ||
+        "Signed-in user"
+      }
+    />
+  );
 }
 
 function Workspace({ userLabel }: { userLabel: string }) {

@@ -44,7 +44,7 @@ The web app is a companion/demo surface. It uses the same `FileLibraryService` f
 6. Open `http://localhost:8000/` for the companion web app.
 7. Point an MCP-compatible host at `http://localhost:8000/mcp`.
 
-Set `CLERK_PUBLISHABLE_KEY` when you want local Clerk sign-in in the web app.
+Most local defaults are baked into `backend/settings.py`, so local `.env` only needs the required secrets plus `CLERK_ISSUER_URL` and `VITE_CLERK_PUBLISHABLE_KEY`. Keep deployment-only overrides like `APP_BASE_URL`, `DATABASE_URL`, Clerk OAuth client credentials, or `VITE_CHATKIT_DOMAIN_KEY` out of local `.env` unless you are intentionally testing them.
 
 ## Verification
 

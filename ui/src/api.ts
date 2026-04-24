@@ -1,4 +1,12 @@
-import type { DeleteFileResponse, FileDetail, FileListResponse, TagListResponse, UploadResponse, UploadSessionResponse } from "./types";
+import type {
+  AuthUser,
+  DeleteFileResponse,
+  FileDetail,
+  FileListResponse,
+  TagListResponse,
+  UploadResponse,
+  UploadSessionResponse,
+} from "./types";
 
 const API_BASE_URL = normalizeBase(import.meta.env.VITE_API_BASE_URL ?? "/api");
 const CHATKIT_DOMAIN_KEY = import.meta.env.VITE_CHATKIT_DOMAIN_KEY ?? "domain_pk_local_file_desk";
@@ -72,6 +80,10 @@ export async function listFiles(params: {
 
 export async function getFileDetail(fileId: string): Promise<FileDetail> {
   return apiRequest<FileDetail>(`/files/${encodeURIComponent(fileId)}`);
+}
+
+export async function getAuthenticatedUser(): Promise<AuthUser> {
+  return apiRequest<AuthUser>("/auth/me");
 }
 
 export async function listTags(): Promise<TagListResponse> {
